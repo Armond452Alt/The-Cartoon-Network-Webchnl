@@ -1,43 +1,21 @@
-const express = require('express');
-const { exec } = require('child_process');
-const path = require('path');
 const fs = require('fs');
-const cors = require('cors');
+const http = require('https'); // or 'http' depending on your URL
 
-const app = express();
-const PORT = process.env.PORT || 10000;
-const STREAM_DIR = path.join(__dirname, 'public', 'stream');
+// A public direct-download link to a video file to test with
+const videoUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"; 
+const videoPath = "./video.mp4";
 
-// Enable CORS so your website frontend player can load the stream securely
-app.use(cors());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Ensure directory exists
-if (!fs.existsSync(STREAM_DIR)) {
-    fs.mkdirSync(STREAM_DIR, { recursive: true });
+// Automatically downloads the video if it doesn't exist on the server
+if (!fs.existsSync(videoPath)) {
+    console.log("video.mp4 missing. Downloading a video file automatically...");
+    const file = fs.createWriteStream(videoPath);
+    http.get(videoUrl, function(response) {
+        response.pipe(file);
+        file.on('finish', () => {
+            file.close();
+            console.log("Download complete! video.mp4 is ready to loop.");
+        });
+    });
+} else {
+    console.log("video.mp4 found! Starting loop engine...");
 }
-
-// FFmpeg logic to continuously loop a video file into an HLS live manifest
-const startStreaming = () => {
-    console.log("Starting linear channel FFmpeg encoder...");
-    
-    // Replace 'video.mp4' with the path to your source file or stream source link
-    const ffmpegCmd = `ffmpeg -re -stream_loop -1 -i video.mp4 -c:v libx264 -preset superfast -c:a aac -f hls -hls_time 4 -hls_list_size 5 -hls_flags delete_segments ${STREAM_DIR}/channel.m3u8`;
-
-    const ffmpegProcess = exec(ffmpegCmd, (error) => {
-        if (error) {
-            console.error(`FFmpeg process error: ${error.message}`);
-            setTimeout(startStreaming, 5000); // Attempt auto-restart on fail
-        }
-    });
-
-    ffmpegProcess.stderr.on('data', (data) => {
-        // Keeps track of streaming logs in the Render console
-        console.log(data.toString());
-    });
-};
-
-app.listen(PORT, () => {
-    console.log(`Streaming backend listening on port ${PORT}`);
-    startStreaming();
-});
