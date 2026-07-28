@@ -1,0 +1,3 @@
+include:
+  - index.m3u8
+  - "*.ts"
