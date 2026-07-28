@@ -1,11 +1,25 @@
+const express = require('express');
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
 
-const videoUrl = "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"; 
+const app = express();
+const PORT = process.env.PORT || 8000;
+
+// Working direct MP4 sample URL
+const videoUrl = "https://raw.githubusercontent.com/bower/bower/master/test/fixtures/down.mp4";
 const videoPath = path.join(__dirname, "video.mp4");
 
-// Safe, streaming download block
+// 1. Bind port immediately so Render health check passes
+app.get('/', (req, res) => {
+    res.send('Cartoon Network Web Channel is running live!');
+});
+
+app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+});
+
+// 2. Download test video if missing
 if (!fs.existsSync(videoPath)) {
     console.log("video.mp4 is missing. Initiating automatic network download...");
     const file = fs.createWriteStream(videoPath);
@@ -18,10 +32,10 @@ if (!fs.existsSync(videoPath)) {
         response.pipe(file);
         file.on('finish', () => {
             file.close();
-            console.log("Download complete! video.mp4 is saved locally and ready to loop.");
+            console.log("Download complete! video.mp4 saved successfully.");
         });
     }).on('error', (err) => {
-        fs.unlink(videoPath, () => {}); // Clear partial file on error
+        fs.unlink(videoPath, () => {});
         console.error(`Network download error: ${err.message}`);
     });
 } else {
