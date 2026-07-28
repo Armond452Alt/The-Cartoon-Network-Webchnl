@@ -1,43 +1,54 @@
 const express = require('express');
+const { spawn } = require('child_process');
 const fs = require('fs');
-const https = require('https');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || 10000;
 
-// Working direct MP4 sample URL
-const videoUrl = "https://raw.githubusercontent.com/bower/bower/master/test/fixtures/down.mp4";
-const videoPath = path.join(__dirname, "video.mp4");
+const hlsDir = path.join(__dirname, 'public', 'hls');
 
-// 1. Bind port immediately so Render health check passes
+// Ensure HLS output directory exists
+if (!fs.existsSync(hlsDir)) {
+    fs.mkdirSync(hlsDir, { recursive: true });
+}
+
+// Serve the HLS directory publicly
+app.use('/hls', express.static(hlsDir));
+
 app.get('/', (req, res) => {
-    res.send('Cartoon Network Web Channel is running live!');
+    res.send('Cartoon Network Web Channel HLS Server is running!');
 });
+
+// Function to start generating the HLS stream from your media/playlist
+function startHLSStream() {
+    console.log("Starting FFmpeg HLS stream generation...");
+
+    const ffmpeg = spawn('ffmpeg', [
+        '-re',
+        '-i', 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4', // or -f concat -i playlist.txt
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-c:a', 'aac',
+        '-f', 'hls',
+        '-hls_time', '4',                  // 4-second segment duration
+        '-hls_list_size', '5',              // Keep last 5 segments in index.m3u8
+        '-hls_flags', 'delete_segments',   // Clean up old segments automatically
+        path.join(hlsDir, 'index.m3u8')
+    ]);
+
+    ffmpeg.stderr.on('data', (data) => {
+        // Uncomment for FFmpeg debugging logs:
+        // console.log(`[FFmpeg] ${data}`);
+    });
+
+    ffmpeg.on('close', (code) => {
+        console.log(`FFmpeg stream exited with code ${code}. Restarting...`);
+        setTimeout(startHLSStream, 2000);
+    });
+}
 
 app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
+    startHLSStream();
 });
-
-// 2. Download test video if missing
-if (!fs.existsSync(videoPath)) {
-    console.log("video.mp4 is missing. Initiating automatic network download...");
-    const file = fs.createWriteStream(videoPath);
-    
-    https.get(videoUrl, (response) => {
-        if (response.statusCode !== 200) {
-            console.error(`Download failed: Server responded with status ${response.statusCode}`);
-            return;
-        }
-        response.pipe(file);
-        file.on('finish', () => {
-            file.close();
-            console.log("Download complete! video.mp4 saved successfully.");
-        });
-    }).on('error', (err) => {
-        fs.unlink(videoPath, () => {});
-        console.error(`Network download error: ${err.message}`);
-    });
-} else {
-    console.log("video.mp4 verified locally! Starting media engine...");
-}
