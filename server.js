@@ -1,4 +1,4 @@
-const express = require('express');
+    const express = require('express');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -15,58 +15,97 @@ app.use((req, res, next) => {
 
 // Ensure public directories exist
 const publicDir = path.join(__dirname, 'public');
+const showsDir = path.join(__dirname, 'public/shows');
 const hlsOutputDir = path.join(__dirname, 'public/hls');
 
-if (!fs.existsSync(publicDir)) {
-  fs.mkdirSync(publicDir, { recursive: true });
-}
-if (!fs.existsSync(hlsOutputDir)) {
-  fs.mkdirSync(hlsOutputDir, { recursive: true });
-}
+[publicDir, showsDir, hlsOutputDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
 
-// Serve static HLS files
+// Serve static HLS files and public assets
 app.use('/public', express.static(publicDir));
 
 // Stream assets configuration
-const PRIMARY_STREAM = process.env.STREAM_URL;
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
 const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
-let ffmpegProcess = null;
-let currentBlock = null; // 'day' or 'night'
+// Custom Daytime Show Schedule (12 PM - 6 PM ET)
+// Supports multi-part files for large uploads (e.g., pt1 and pt2)
+const SHOW_SCHEDULE = {
+  12: { 
+    title: 'Regular Show: The Lost Tapes', 
+    files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] 
+  },
+  13: { title: 'The Wonderfully Weird World of Gumball', files: ['twwwog.mp4'] },
+  14: { title: 'The Amazing World of Gumball', files: ['tawog.mp4'] },
+  15: { title: 'Uncle Grandpa', files: ['uncle_grandpa.mp4'] },
+  16: { title: 'Regular Show (Original)', files: ['regular_show.mp4'] },
+  17: { title: 'Adventure Time', files: ['adventure_time.mp4'] }
+};
 
-// Helper function to get current Eastern Time hour (0 - 23)
+let ffmpegProcess = null;
+let currentSlot = null;
+
+// Reliable Eastern Time hour retriever (0 - 23)
 function getETHour() {
-  const now = new Date();
-  const etString = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
-  return new Date(etString).getHours();
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    hour12: false
+  });
+  const hour = parseInt(formatter.format(new Date()), 10);
+  return hour === 24 ? 0 : hour;
 }
 
-// Determine source file/stream based on schedule
+// Get video source based on current schedule
 function getScheduleSource() {
   const hour = getETHour();
-  
-  // 6:00 AM (6) up to 6:00 PM (18) = Cartoon Network
-  if (hour >= 6 && hour < 18) {
-    currentBlock = 'day';
-    console.log(`[Schedule] ${hour}:00 ET - Daytime: Playing Cartoon Network`);
-    
-    // Fall back to technical_difficulties.mp4 or offair.mp4 if primary stream URL is unset
-    const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
-    return { 
-      source: PRIMARY_STREAM || fallback, 
-      isLooping: !PRIMARY_STREAM 
-    };
-  } else {
-    currentBlock = 'night';
-    console.log(`[Schedule] ${hour}:00 ET - Nighttime: Playing Sign-Off / Off-Air Bumper`);
-    return { 
-      source: FALLBACK_VIDEO, 
-      isLooping: true 
-    };
+
+  // Check if current hour falls within the custom block (12 PM - 6 PM)
+  if (SHOW_SCHEDULE[hour]) {
+    const show = SHOW_SCHEDULE[hour];
+    const existingFiles = show.files
+      .map(file => path.join(showsDir, file))
+      .filter(filePath => fs.existsSync(filePath));
+
+    currentSlot = `show_${hour}`;
+    console.log(`[Schedule] ${hour}:00 ET - Airing: ${show.title}`);
+
+    if (existingFiles.length > 0) {
+      // Multiple parts: build an FFmpeg concat list text file
+      if (existingFiles.length > 1) {
+        const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
+        const fileContent = existingFiles.map(f => `file '${f}'`).join('\n');
+        fs.writeFileSync(concatListPath, fileContent);
+        
+        return { source: concatListPath, isConcat: true, isLooping: true };
+      }
+      return { source: existingFiles[0], isConcat: false, isLooping: true };
+    } else {
+      console.log(`[Schedule Warning] Files missing for "${show.title}". Playing technical difficulties.`);
+      const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
+      return { source: fallback, isConcat: false, isLooping: true };
+    }
   }
+
+  // Outside 12 PM - 6 PM ET: Fall back to STREAM_URL or off-air bumper
+  currentSlot = 'off_block';
+  let altSource = process.env.STREAM_URL;
+  let isLooping = false;
+
+  if (!altSource || altSource.trim() === '') {
+    console.log(`[Schedule] ${hour}:00 ET - Outside daytime block & no STREAM_URL set. Playing off-air bumper.`);
+    altSource = FALLBACK_VIDEO;
+    isLooping = true;
+  } else {
+    console.log(`[Schedule] ${hour}:00 ET - Airing primary live stream.`);
+  }
+
+  return { source: altSource, isConcat: false, isLooping };
 }
 
 function stopFFmpeg() {
@@ -77,7 +116,7 @@ function stopFFmpeg() {
   }
 }
 
-function startFFmpeg(inputSource, isLooping = false) {
+function startFFmpeg(inputSource, isLooping = false, isConcat = false) {
   stopFFmpeg();
 
   console.log(`[Node] Starting FFmpeg process. Source: ${inputSource}`);
@@ -88,37 +127,41 @@ function startFFmpeg(inputSource, isLooping = false) {
     args.push('-stream_loop', '-1');
   }
 
-  // Input 0: Video stream or file
+  // If input is a multi-part concat list, add format flags
+  if (isConcat) {
+    args.push('-f', 'concat', '-safe', '0');
+  }
+
+  // Input 0: Main video content
   args.push('-i', inputSource);
 
   const hasBug = fs.existsSync(SCREENBUG_IMAGE);
 
-  // Input 1: Screenbug overlay image (if file exists)
+  // Input 1: Screenbug overlay image (if present)
   if (hasBug) {
     args.push('-i', SCREENBUG_IMAGE);
   }
 
-  // Filter configuration for screenbug positioning
+  // Overlay screenbug bottom-right if available
   if (hasBug) {
-    // Scales screenbug width to 110px and overlays in bottom-right corner
     args.push(
       '-filter_complex', '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20'
     );
   }
 
   args.push(
-    // Optimized video encoding parameters
+    // Video encoding settings
     '-threads', '1',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
     '-crf', '28',
     
-    // Audio encoding parameters
+    // Audio encoding settings
     '-c:a', 'aac',
     '-b:a', '96k',
     
-    // HLS segmenting settings
+    // HLS segmenting flags
     '-f', 'hls',
     '-hls_time', '4',
     '-hls_list_size', '5',
@@ -135,31 +178,31 @@ function startFFmpeg(inputSource, isLooping = false) {
   ffmpegProcess.on('close', (code, signal) => {
     console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
     
-    // Auto-restart stream if it unexpectedly drops
+    // Auto-restart stream on accidental crash or source finish
     setTimeout(() => {
       const active = getScheduleSource();
-      startFFmpeg(active.source, active.isLooping);
+      startFFmpeg(active.source, active.isLooping, active.isConcat);
     }, 3000);
   });
 }
 
-// Start stream on initial boot
+// Initial boot initialization
 const initial = getScheduleSource();
-startFFmpeg(initial.source, initial.isLooping);
+startFFmpeg(initial.source, initial.isLooping, initial.isConcat);
 
-// Schedule watcher (runs every minute)
+// Schedule watcher: Checks every minute to trigger hourly transitions
 setInterval(() => {
   const hour = getETHour();
-  const targetBlock = (hour >= 6 && hour < 18) ? 'day' : 'night';
+  const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
 
-  if (targetBlock !== currentBlock) {
-    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching block to ${targetBlock.toUpperCase()}...`);
+  if (expectedSlot !== currentSlot) {
+    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching block...`);
     const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping);
+    startFFmpeg(active.source, active.isLooping, active.isConcat);
   }
 }, 60 * 1000);
 
-// Health check route
+// Health check endpoint
 app.get('/', (req, res) => {
   res.send('Cartoon Network Webchannel Stream Server is Running.');
 });
