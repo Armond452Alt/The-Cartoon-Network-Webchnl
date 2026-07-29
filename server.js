@@ -27,9 +27,10 @@ if (!fs.existsSync(hlsOutputDir)) {
 // Serve static HLS files
 app.use('/public', express.static(publicDir));
 
-// Stream configuration
+// Stream assets configuration
 const PRIMARY_STREAM = process.env.STREAM_URL;
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
+const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
 let ffmpegProcess = null;
@@ -42,7 +43,7 @@ function getETHour() {
   return new Date(etString).getHours();
 }
 
-// Determine if we should stream CN or Off-Air based on 6:00 AM / 6:00 PM sign-off
+// Determine if we should stream CN or Off-Air based on schedule
 function getScheduleSource() {
   const hour = getETHour();
   // 6:00 AM (6) up to 6:00 PM (18) = Cartoon Network
@@ -70,27 +71,39 @@ function startFFmpeg(inputSource, isLooping = false) {
 
   console.log(`[Node] Starting FFmpeg process. Source: ${inputSource}`);
 
-  const args = [
-    '-y',
-    '-loglevel', 'warning'
-  ];
+  const args = ['-y', '-loglevel', 'warning'];
 
-  // Loop the file endlessly if playing local bumper
   if (isLooping) {
     args.push('-stream_loop', '-1');
   }
 
+  // Input 0: Video stream or file
+  args.push('-i', inputSource);
+
+  const hasBug = fs.existsSync(SCREENBUG_IMAGE);
+
+  // Input 1: Screenbug overlay image (if file exists)
+  if (hasBug) {
+    args.push('-i', SCREENBUG_IMAGE);
+  }
+
+  // Add video/audio filter and encoding options
+  if (hasBug) {
+    // Scales screenbug width to 110px and places it 20px from bottom-right corner
+    args.push(
+      '-filter_complex', '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20'
+    );
+  }
+
   args.push(
-    '-i', inputSource,
-    
-    // RAM and CPU optimizations for Render (512 MB limit)
+    // Encoding settings optimized for Render
     '-threads', '1',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
     '-crf', '28',
     
-    // Audio encoding
+    // Audio options
     '-c:a', 'aac',
     '-b:a', '96k',
     
@@ -123,19 +136,19 @@ function startFFmpeg(inputSource, isLooping = false) {
 const initial = getScheduleSource();
 startFFmpeg(initial.source, initial.isLooping);
 
-// Check schedule every 1 minute for automatic sign-on / sign-off switching
+// Check schedule every 1 minute for automatic switching
 setInterval(() => {
   const hour = getETHour();
   const targetBlock = (hour >= 6 && hour < 18) ? 'day' : 'night';
 
   if (targetBlock !== currentBlock) {
-    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching programming block to ${targetBlock.toUpperCase()}...`);
+    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching block to ${targetBlock.toUpperCase()}...`);
     const active = getScheduleSource();
     startFFmpeg(active.source, active.isLooping);
   }
 }, 60 * 1000);
 
-// Health check endpoint for Render
+// Health check endpoint
 app.get('/', (req, res) => {
   res.send('Cartoon Network Webchannel Stream Server is Running.');
 });
