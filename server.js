@@ -1,5 +1,4 @@
 const express = require('express');
-const cors = require('cors');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -7,8 +6,12 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enable CORS so GitHub Pages and other sites can fetch the stream
-app.use(cors());
+// Enable CORS using standard Express middleware (no 'cors' package required)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  next();
+});
 
 // Ensure public directories exist
 const publicDir = path.join(__dirname, 'public');
