@@ -6,7 +6,7 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enable CORS using standard Express middleware (no 'cors' package required)
+// Enable CORS using native Express middleware
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -33,16 +33,49 @@ const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
 let ffmpegProcess = null;
+let currentBlock = null; // 'day' or 'night'
+
+// Helper function to get current Eastern Time hour (0 - 23)
+function getETHour() {
+  const now = new Date();
+  const etString = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  return new Date(etString).getHours();
+}
+
+// Determine if we should stream CN or Off-Air based on 6:00 AM / 6:00 PM sign-off
+function getScheduleSource() {
+  const hour = getETHour();
+  // 6:00 AM (6) up to 6:00 PM (18) = Cartoon Network
+  if (hour >= 6 && hour < 18) {
+    currentBlock = 'day';
+    console.log(`[Schedule] ${hour}:00 ET - Daytime: Playing Cartoon Network`);
+    return { source: PRIMARY_STREAM || FALLBACK_VIDEO, isLooping: !PRIMARY_STREAM };
+  } else {
+    currentBlock = 'night';
+    console.log(`[Schedule] ${hour}:00 ET - Nighttime: Playing Sign-Off / Off-Air Bumper`);
+    return { source: FALLBACK_VIDEO, isLooping: true };
+  }
+}
+
+function stopFFmpeg() {
+  if (ffmpegProcess) {
+    ffmpegProcess.removeAllListeners('close');
+    ffmpegProcess.kill('SIGKILL');
+    ffmpegProcess = null;
+  }
+}
 
 function startFFmpeg(inputSource, isLooping = false) {
-  console.log(`[Node] Spawning FFmpeg process. Source: ${inputSource}`);
+  stopFFmpeg();
+
+  console.log(`[Node] Starting FFmpeg process. Source: ${inputSource}`);
 
   const args = [
     '-y',
     '-loglevel', 'warning'
   ];
 
-  // Loop the local file infinitely if using fallback video
+  // Loop the file endlessly if playing local bumper
   if (isLooping) {
     args.push('-stream_loop', '-1');
   }
@@ -50,7 +83,7 @@ function startFFmpeg(inputSource, isLooping = false) {
   args.push(
     '-i', inputSource,
     
-    // RAM and CPU optimizations for Render's 512 MB limit
+    // RAM and CPU optimizations for Render (512 MB limit)
     '-threads', '1',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
@@ -69,7 +102,6 @@ function startFFmpeg(inputSource, isLooping = false) {
     HLS_OUTPUT_FILE
   );
 
-  // Spawn system-installed FFmpeg directly
   ffmpegProcess = spawn('ffmpeg', args);
 
   ffmpegProcess.stderr.on('data', (data) => {
@@ -78,30 +110,30 @@ function startFFmpeg(inputSource, isLooping = false) {
 
   ffmpegProcess.on('close', (code, signal) => {
     console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
-
-    // If primary stream fails/dies, switch to the local offair.mp4 fallback
-    if (!isLooping) {
-      console.log('[Node] Primary stream stopped. Switching to Off-Air Bumper in 3 seconds...');
-      setTimeout(() => {
-        if (fs.existsSync(FALLBACK_VIDEO)) {
-          startFFmpeg(FALLBACK_VIDEO, true);
-        } else {
-          console.error(`[Node ERROR] Fallback file missing at ${FALLBACK_VIDEO}`);
-        }
-      }, 3000);
-    }
+    
+    // Auto-restart stream if it unexpectedly stops
+    setTimeout(() => {
+      const active = getScheduleSource();
+      startFFmpeg(active.source, active.isLooping);
+    }, 3000);
   });
 }
 
-// Check startup conditions
-if (PRIMARY_STREAM && PRIMARY_STREAM.startsWith('http')) {
-  startFFmpeg(PRIMARY_STREAM, false);
-} else if (fs.existsSync(FALLBACK_VIDEO)) {
-  console.log('[Node] No valid STREAM_URL found. Starting Off-Air stream.');
-  startFFmpeg(FALLBACK_VIDEO, true);
-} else {
-  console.error('[Node ERROR] No STREAM_URL set and public/offair.mp4 was not found.');
-}
+// Initial Stream Startup
+const initial = getScheduleSource();
+startFFmpeg(initial.source, initial.isLooping);
+
+// Check schedule every 1 minute for automatic sign-on / sign-off switching
+setInterval(() => {
+  const hour = getETHour();
+  const targetBlock = (hour >= 6 && hour < 18) ? 'day' : 'night';
+
+  if (targetBlock !== currentBlock) {
+    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching programming block to ${targetBlock.toUpperCase()}...`);
+    const active = getScheduleSource();
+    startFFmpeg(active.source, active.isLooping);
+  }
+}, 60 * 1000);
 
 // Health check endpoint for Render
 app.get('/', (req, res) => {
@@ -109,5 +141,5 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[Node] Server is listening on port ${PORT}`);
+  console.log(`[Node] Server listening on port ${PORT}`);
 });
