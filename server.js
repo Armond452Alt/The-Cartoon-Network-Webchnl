@@ -1,94 +1,110 @@
+const express = require('express');
+const cors = require('cors');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-/**
- * Executes an FFmpeg streaming/conversion process with error capturing and memory constraints.
- * 
- * @param {string} inputSource - Direct stream URL, M3U8, or local file path.
- * @param {string} outputDirName - Name of the folder to store output files (e.g., 'hls_out').
- */
-function runFFmpegProcess(inputSource, outputDirName = 'hls_output') {
-  // 1. Ensure output directory exists before FFmpeg starts
-  const outputDir = path.join(__dirname, outputDirName);
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// Enable CORS so GitHub Pages and other sites can fetch the stream
+app.use(cors());
+
+// Ensure public directories exist
+const publicDir = path.join(__dirname, 'public');
+const hlsOutputDir = path.join(__dirname, 'public/hls');
+
+if (!fs.existsSync(publicDir)) {
+  fs.mkdirSync(publicDir, { recursive: true });
+}
+if (!fs.existsSync(hlsOutputDir)) {
+  fs.mkdirSync(hlsOutputDir, { recursive: true });
+}
+
+// Serve static HLS files
+app.use('/public', express.static(publicDir));
+
+// Stream configuration
+const PRIMARY_STREAM = process.env.STREAM_URL;
+const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
+const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
+
+let ffmpegProcess = null;
+
+function startFFmpeg(inputSource, isLooping = false) {
+  console.log(`[Node] Spawning FFmpeg process. Source: ${inputSource}`);
+
+  const args = [
+    '-y',
+    '-loglevel', 'warning'
+  ];
+
+  // Loop the local file infinitely if using fallback video
+  if (isLooping) {
+    args.push('-stream_loop', '-1');
   }
 
-  const playlistPath = path.join(outputDir, 'index.m3u8');
-
-  // 2. Build FFmpeg arguments
-  // Optimized for Render 512MB RAM limits: 1 thread, ultrafast preset, low memory buffering
-  const ffmpegArgs = [
-    '-y',                         // Overwrite output files without asking
-    '-re',                        // Read input at native frame rate (useful for live streams)
-    '-i', inputSource,            // Input stream or file
+  args.push(
+    '-i', inputSource,
     
-    // Video codec & Memory optimizations
+    // RAM and CPU optimizations for Render's 512 MB limit
+    '-threads', '1',
     '-c:v', 'libx264',
-    '-preset', 'ultrafast',       // Minimizes CPU and RAM usage
+    '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-threads', '1',              // Keeps Render from OOM-killing (SIGKILL) the process
-    '-crf', '26',                 // Reasonable balance between quality and encoding load
+    '-crf', '28',
     
-    // Audio codec
+    // Audio encoding
     '-c:a', 'aac',
-    '-ar', '44100',
-    '-ac', '2',
-    '-b:a', '128k',
+    '-b:a', '96k',
     
-    // HLS Output settings
+    // HLS output configuration
     '-f', 'hls',
     '-hls_time', '4',
     '-hls_list_size', '5',
     '-hls_flags', 'delete_segments',
-    playlistPath
-  ];
+    HLS_OUTPUT_FILE
+  );
 
-  console.log(`[Node] Spawning FFmpeg...`);
-  console.log(`[Node] Target Output: ${playlistPath}`);
+  // Spawn system-installed FFmpeg directly
+  ffmpegProcess = spawn('ffmpeg', args);
 
-  // 3. Spawn child process
-  const ffmpeg = spawn('ffmpeg', ffmpegArgs);
+  ffmpegProcess.stderr.on('data', (data) => {
+    console.log(`[FFmpeg LOG]: ${data.toString().trim()}`);
+  });
 
-  // 4. Stream real-time output (FFmpeg sends logs to stderr, not stdout)
-  ffmpeg.stderr.on('data', (chunk) => {
-    const logLine = chunk.toString().trim();
-    // Filter out redundant frame logs to keep stdout clean, or log everything for debugging
-    if (logLine.length > 0) {
-      console.log(`[FFmpeg LOG]: ${logLine}`);
+  ffmpegProcess.on('close', (code, signal) => {
+    console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
+
+    // If primary stream fails/dies, switch to the local offair.mp4 fallback
+    if (!isLooping) {
+      console.log('[Node] Primary stream stopped. Switching to Off-Air Bumper in 3 seconds...');
+      setTimeout(() => {
+        if (fs.existsSync(FALLBACK_VIDEO)) {
+          startFFmpeg(FALLBACK_VIDEO, true);
+        } else {
+          console.error(`[Node ERROR] Fallback file missing at ${FALLBACK_VIDEO}`);
+        }
+      }, 3000);
     }
   });
-
-  // 5. Catch spawn failure (e.g., 'ffmpeg' binary not found or path error)
-  ffmpeg.on('error', (err) => {
-    console.error(`[FFmpeg ERROR] Failed to start process:`, err.message);
-  });
-
-  // 6. Handle process termination
-  ffmpeg.on('close', (code, signal) => {
-    if (signal) {
-      console.error(`[FFmpeg EXIT] Process was killed by signal: ${signal}`);
-      if (signal === 'SIGKILL') {
-        console.error(`[FFmpeg DIAGNOSTIC] SIGKILL usually indicates Render out-of-memory (OOM) killer.`);
-      }
-    } else {
-      console.log(`[FFmpeg EXIT] Process exited with code: ${code}`);
-    }
-  });
-
-  // 7. Cleanup handling on Node server shutdown
-  process.on('SIGINT', () => {
-    console.log('[Node] Shutting down... Terminating FFmpeg.');
-    ffmpeg.kill('SIGTERM');
-    process.exit();
-  });
-
-  return ffmpeg;
 }
 
-// --- Example Execution ---
-// Replace with your input URL (RTSP, M3U8, HTTP stream) or local file path
-const INPUT_STREAM_URL = 'http://example.com/live/stream.m3u8'; 
+// Check startup conditions
+if (PRIMARY_STREAM && PRIMARY_STREAM.startsWith('http')) {
+  startFFmpeg(PRIMARY_STREAM, false);
+} else if (fs.existsSync(FALLBACK_VIDEO)) {
+  console.log('[Node] No valid STREAM_URL found. Starting Off-Air stream.');
+  startFFmpeg(FALLBACK_VIDEO, true);
+} else {
+  console.error('[Node ERROR] No STREAM_URL set and public/offair.mp4 was not found.');
+}
 
-const streamProcess = runFFmpegProcess(INPUT_STREAM_URL, 'public/hls');
+// Health check endpoint for Render
+app.get('/', (req, res) => {
+  res.send('Cartoon Network Webchannel Stream Server is Running.');
+});
+
+app.listen(PORT, () => {
+  console.log(`[Node] Server is listening on port ${PORT}`);
+});
