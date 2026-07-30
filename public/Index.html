@@ -1,1 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cartoon Network Webchannel</title>
+  
+  <!-- HLS.js for playing .m3u8 live streams in standard browsers -->
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: #000;
+      color: #fff;
+      font-family: Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    .player-container {
+      width: 100%;
+      max-width: 1080px;
+      background: #111;
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+    }
+    video {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      display: block;
+      background: #000;
+    }
+    .now-playing-bar {
+      padding: 15px 20px;
+      background: #181818;
+      border-top: 2px solid #00aeef;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .show-info h2 {
+      font-size: 1.2rem;
+      color: #00aeef;
+    }
+    .show-info p {
+      font-size: 0.95rem;
+      color: #ccc;
+      margin-top: 4px;
+    }
+    .live-badge {
+      background: #e50914;
+      color: white;
+      padding: 4px 8px;
+      font-size: 0.8rem;
+      font-weight: bold;
+      border-radius: 4px;
+      text-transform: uppercase;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="player-container">
+    <video id="videoPlayer" controls autoplay muted playsinline></video>
+    
+    <div class="now-playing-bar">
+      <div class="show-info">
+        <h2 id="showTitle">Loading Channel...</h2>
+        <p id="episodeTitle">Please wait...</p>
+      </div>
+      <div id="liveIndicator" class="live-badge" style="display: none;">ON AIR</div>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('videoPlayer');
+    const showTitleEl = document.getElementById('showTitle');
+    const episodeTitleEl = document.getElementById('episodeTitle');
+    const liveIndicator = document.getElementById('liveIndicator');
+
+    let hls = null;
+    let currentPlaylist = [];
+    let currentTrack = 0;
+
+    // Load media (either MP4 or .m3u8 live stream)
+    function playMedia(url) {
+      // Clean up previous HLS instance if switching away from a stream
+      if (hls) {
+        hls.destroy();
+        hls = null;
+      }
+
+      if (url.endsWith('.m3u8')) {
+        liveIndicator.style.display = 'block';
+        
+        if (Hls.isSupported()) {
+          hls = new Hls();
+          hls.loadSource(url);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            video.play().catch(e => console.log("Autoplay blocked:", e));
+          });
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          // Native Safari HLS support
+          video.src = url;
+          video.play().catch(e => console.log("Autoplay blocked:", e));
+        }
+      } else {
+        liveIndicator.style.display = 'none';
+        video.src = url;
+        video.play().catch(e => console.log("Autoplay blocked:", e));
+      }
+    }
+
+    // Fetch current slot from server
+    function fetchSchedule() {
+      fetch('/api/now-playing')
+        .then(res => res.json())
+        .then(slot => {
+          showTitleEl.textContent = slot.show || "Cartoon Network";
+          episodeTitleEl.textContent = slot.title || "";
+
+          // Populate playlist array (supports multi-part episode arrays or single files)
+          if (slot.playlist && slot.playlist.length > 0) {
+            currentPlaylist = slot.playlist;
+          } else {
+            currentPlaylist = [slot.file];
+          }
+
+          currentTrack = 0;
+          playMedia(currentPlaylist[currentTrack]);
+        })
+        .catch(err => {
+          console.error("Error fetching schedule:", err);
+          showTitleEl.textContent = "Offline";
+          episodeTitleEl.textContent = "Unable to connect to schedule API.";
+        });
+    }
+
+    // Automatically transition to the next part in the playlist when a clip ends
+    video.addEventListener('ended', () => {
+      currentTrack++;
+      if (currentTrack < currentPlaylist.length) {
+        playMedia(currentPlaylist[currentTrack]);
+      } else {
+        // Re-check schedule for the next show/bumper when playlist finishes
+        fetchSchedule();
+      }
+    });
+
+    // Initial load
+    fetchSchedule();
+  </script>
+</body>
+</html>
