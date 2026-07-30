@@ -144,7 +144,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false) {
   // Overlay screenbug bottom-right if available
   if (hasBug) {
     args.push(
-      '-filter_complex', '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20'
+      '-filter_complex', '[1:v]scale=150:-1[bug];[0:v][bug]overlay=main_w-overlay_w-30:main_h-overlay_h-30'
     );
   }
 
