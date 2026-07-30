@@ -37,12 +37,12 @@ const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 // Default Live Stream Fallback (Outside daytime schedule)
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
 
-// Schedule with TV Ratings (11 AM - 8 PM ET)
+// Schedule mapping to your graphic overlays (11 AM - 8 PM ET)
 const SHOW_SCHEDULE = {
   11: { title: 'Cartoon Network Morning Block', rating: 'TV-G', ratingImg: 'tv_g.png', files: ['cn_sign_on.mp4'] },
   12: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
-  13: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt2.mp4', 'twwwog_s01e01_pt3.mp4'] },
-  14: { title: 'The Amazing World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
+  13: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt2.mp4', 'twwwog_s01e01_pt3.mp4'] },
+  14: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
   15: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['uncle_grandpa.mp4'] },
   16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['regular_show.mp4'] },
   17: { title: 'Adventure Time', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['adventure_time.mp4'] },
@@ -136,13 +136,13 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
-  // Build filter complex for Rating (top-left) and Screenbug (bottom-right)
+  // Filter complex: Scales rating to 350px width, overlays at 20:20 top-left, and hides after 5 seconds
   let filterComplex = '';
 
   if (hasRating && hasBug) {
-    filterComplex = '[1:v]scale=90:-1[rating];[2:v]scale=110:-1[bug];[0:v][rating]overlay=30:30[tmp];[tmp][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
+    filterComplex = '[1:v]scale=350:-1[rating];[2:v]scale=110:-1[bug];[0:v][rating]overlay=20:20:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
   } else if (hasRating) {
-    filterComplex = '[1:v]scale=90:-1[rating];[0:v][rating]overlay=30:30';
+    filterComplex = '[1:v]scale=350:-1[rating];[0:v][rating]overlay=20:20:enable=\'between(t,0,5)\'';
   } else if (hasBug) {
     filterComplex = '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
   }
@@ -202,7 +202,7 @@ app.get('/api/schedule', (req, res) => {
   res.json(SHOW_SCHEDULE);
 });
 
-// API: Current Show and Rating Information (for index.html and EPGs)
+// API: Current Show and Rating Information
 app.get('/api/now-playing', (req, res) => {
   const hour = getETHour();
   const currentShow = SHOW_SCHEDULE[hour] || { 
@@ -242,4 +242,3 @@ app.get('*', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Server listening on port ${PORT}`);
 });
-      
