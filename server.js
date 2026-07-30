@@ -1,212 +1,62 @@
- const express = require('express');
-const { spawn } = require('child_process');
+const express = require('express');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3000;
 
-// Enable CORS using native Express middleware
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  next();
-});
+// Serve static files from the public directory
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Ensure public directories exist
-const publicDir = path.join(__dirname, 'public');
-const showsDir = path.join(__dirname, 'public/shows');
-const hlsOutputDir = path.join(__dirname, 'public/hls');
-
-[publicDir, showsDir, hlsOutputDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
-
-// Serve static HLS files and public assets
-app.use('/public', express.static(publicDir));
-
-// Stream assets configuration
-const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
-const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
-const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
-const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
-
-// Custom Daytime Show Schedule (12 PM - 6 PM ET)
-// Supports multi-part files for large uploads (e.g., pt1 and pt2)
-const SHOW_SCHEDULE = {
-  12: { 
-    title: 'Regular Show: The Lost Tapes', 
-    files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] 
+// Program Schedule with Multi-Part Array Playlists
+const schedule = [
+  {
+    time: "13:00", // 1:00 PM Slot
+    show: "The Wonderfully Weird World of Gumball",
+    title: "The Burger",
+    playlist: [
+      "/Shows/twwwog_s01e01_pt1.mp4",
+      "/Shows/twwwog_s01e01_pt2.mp4",
+      "/Shows/twwwog_s01e01_pt3.mp4"
+    ]
   },
-  13: { title: 'The Wonderfully Weird World of Gumball', files: ['twwwog.mp4'] },
-  14: { title: 'The Amazing World of Gumball', files: ['tawog.mp4'] },
-  15: { title: 'Uncle Grandpa', files: ['uncle_grandpa.mp4'] },
-  16: { title: 'Regular Show (Original)', files: ['regular_show.mp4'] },
-  17: { title: 'Adventure Time', files: ['adventure_time.mp4'] }
-};
-
-let ffmpegProcess = null;
-let currentSlot = null;
-
-// Reliable Eastern Time hour retriever (0 - 23)
-function getETHour() {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    hour12: false
-  });
-  const hour = parseInt(formatter.format(new Date()), 10);
-  return hour === 24 ? 0 : hour;
-}
-
-// Get video source based on current schedule
-function getScheduleSource() {
-  const hour = getETHour();
-
-  // Check if current hour falls within the custom block (12 PM - 6 PM)
-  if (SHOW_SCHEDULE[hour]) {
-    const show = SHOW_SCHEDULE[hour];
-    const existingFiles = show.files
-      .map(file => path.join(showsDir, file))
-      .filter(filePath => fs.existsSync(filePath));
-
-    currentSlot = `show_${hour}`;
-    console.log(`[Schedule] ${hour}:00 ET - Airing: ${show.title}`);
-
-    if (existingFiles.length > 0) {
-      // Multiple parts: build an FFmpeg concat list text file
-      if (existingFiles.length > 1) {
-        const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
-        const fileContent = existingFiles.map(f => `file '${f}'`).join('\n');
-        fs.writeFileSync(concatListPath, fileContent);
-        
-        return { source: concatListPath, isConcat: true, isLooping: true };
-      }
-      return { source: existingFiles[0], isConcat: false, isLooping: true };
-    } else {
-      console.log(`[Schedule Warning] Files missing for "${show.title}". Playing technical difficulties.`);
-      const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
-      return { source: fallback, isConcat: false, isLooping: true };
-    }
+  {
+    time: "14:00", // 2:00 PM Slot
+    show: "The Amazing World of Gumball",
+    title: "The Kids / The Fan",
+    playlist: [
+      "/Shows/part-0.mp4",
+      "/Shows/part-1.mp4",
+      "/Shows/part-2.mp4"
+    ]
   }
+];
 
-  // Outside 12 PM - 6 PM ET: Fall back to STREAM_URL or off-air bumper
-  currentSlot = 'off_block';
-  let altSource = process.env.STREAM_URL;
-  let isLooping = false;
+// Return full schedule
+app.get('/api/schedule', (req, res) => {
+  res.json(schedule);
+});
 
-  if (!altSource || altSource.trim() === '') {
-    console.log(`[Schedule] ${hour}:00 ET - Outside daytime block & no STREAM_URL set. Playing off-air bumper.`);
-    altSource = FALLBACK_VIDEO;
-    isLooping = true;
-  } else {
-    console.log(`[Schedule] ${hour}:00 ET - Airing primary live stream.`);
-  }
-
-  return { source: altSource, isConcat: false, isLooping };
-}
-
-function stopFFmpeg() {
-  if (ffmpegProcess) {
-    ffmpegProcess.removeAllListeners('close');
-    ffmpegProcess.kill('SIGKILL');
-    ffmpegProcess = null;
-  }
-}
-
-function startFFmpeg(inputSource, isLooping = false, isConcat = false) {
-  stopFFmpeg();
-
-  console.log(`[Node] Starting FFmpeg process. Source: ${inputSource}`);
-
-  const args = ['-y', '-loglevel', 'warning'];
-
-  if (isLooping) {
-    args.push('-stream_loop', '-1');
-  }
-
-  // If input is a multi-part concat list, add format flags
-  if (isConcat) {
-    args.push('-f', 'concat', '-safe', '0');
-  }
-
-  // Input 0: Main video content
-  args.push('-i', inputSource);
-
-  const hasBug = fs.existsSync(SCREENBUG_IMAGE);
-
-  // Input 1: Screenbug overlay image (if present)
-  if (hasBug) {
-    args.push('-i', SCREENBUG_IMAGE);
-  }
-
-  // Overlay screenbug bottom-right if available
-  if (hasBug) {
-    args.push(
-      '-filter_complex', '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20'
-    );
-  }
-
-  args.push(
-    // Video encoding settings
-    '-threads', '1',
-    '-c:v', 'libx264',
-    '-preset', 'ultrafast',
-    '-tune', 'zerolatency',
-    '-crf', '28',
-    
-    // Audio encoding settings
-    '-c:a', 'aac',
-    '-b:a', '96k',
-    
-    // HLS segmenting flags
-    '-f', 'hls',
-    '-hls_time', '4',
-    '-hls_list_size', '5',
-    '-hls_flags', 'delete_segments',
-    HLS_OUTPUT_FILE
-  );
-
-  ffmpegProcess = spawn('ffmpeg', args);
-
-  ffmpegProcess.stderr.on('data', (data) => {
-    console.log(`[FFmpeg LOG]: ${data.toString().trim()}`);
+// Get currently active slot based on server hour
+app.get('/api/now-playing', (req, res) => {
+  const currentHour = new Date().getHours();
+  
+  let activeSlot = schedule.find(slot => {
+    const slotHour = parseInt(slot.time.split(':')[0], 10);
+    return slotHour === currentHour;
   });
 
-  ffmpegProcess.on('close', (code, signal) => {
-    console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
-    
-    // Auto-restart stream on accidental crash or source finish
-    setTimeout(() => {
-      const active = getScheduleSource();
-      startFFmpeg(active.source, active.isLooping, active.isConcat);
-    }, 3000);
-  });
-}
-
-// Initial boot initialization
-const initial = getScheduleSource();
-startFFmpeg(initial.source, initial.isLooping, initial.isConcat);
-
-// Schedule watcher: Checks every minute to trigger hourly transitions
-setInterval(() => {
-  const hour = getETHour();
-  const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
-
-  if (expectedSlot !== currentSlot) {
-    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching block...`);
-    const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping, active.isConcat);
+  if (!activeSlot) {
+    activeSlot = schedule[0];
   }
-}, 60 * 1000);
 
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.send('Cartoon Network Webchannel Stream Server is Running.');
+  res.json(activeSlot);
+});
+
+// Fallback to index.html
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
-  console.log(`[Node] Server listening on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
