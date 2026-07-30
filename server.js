@@ -3,8 +3,10 @@ const path = require('path');
 const fs = require('fs');
 
 const app = express();
+// Render automatically provides PORT, defaulting to 10000
 const PORT = process.env.PORT || 10000;
 
+// Serve static assets from the public directory
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Program Schedule Configuration
@@ -53,7 +55,7 @@ const schedule = [
     file: "/Shows/as_sign_on.mp4"
   },
   {
-    time: "20:02", // Live Adult Swim West Simulcast (1080p HD stream)
+    time: "20:02", // 8:02 PM Live Adult Swim West Stream (1080p HD)
     type: "livestream",
     show: "Adult Swim West",
     title: "Live Stream (HD)",
@@ -61,10 +63,12 @@ const schedule = [
   }
 ];
 
+// Return full schedule API
 app.get('/api/schedule', (req, res) => {
   res.json(schedule);
 });
 
+// Get currently active slot based on server time
 app.get('/api/now-playing', (req, res) => {
   const now = new Date();
   const currentHour = now.getHours();
@@ -82,15 +86,17 @@ app.get('/api/now-playing', (req, res) => {
   res.json(activeSlot);
 });
 
+// Fallback route with safety check for public/index.html
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.status(404).send('public/index.html not found.');
+    res.status(404).send('public/index.html not found. Ensure index.html exists inside the public folder.');
   }
 });
 
-app.listen(PORT, () => {
+// Explicitly bind to '0.0.0.0' so Render port scanner can reach the service
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
 });
