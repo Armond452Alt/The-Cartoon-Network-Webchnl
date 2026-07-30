@@ -24,11 +24,11 @@ const hlsOutputDir = path.join(__dirname, 'public/hls');
   }
 });
 
-// Serve static HLS files and public assets
+// Serve static assets and HLS directory
 app.use('/public', express.static(publicDir));
 app.use(express.static(publicDir));
 
-// Fallback & Overlay Configuration
+// Fallback Video, Bug, & Rating Assets Configuration
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
 const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
@@ -37,21 +37,22 @@ const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 // Default Live Stream Fallback (Outside daytime schedule)
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
 
-// Custom Daytime Show Schedule (12 PM - 8 PM ET)
+// Schedule with TV Ratings (11 AM - 8 PM ET)
 const SHOW_SCHEDULE = {
-  12: { title: 'Regular Show: The Lost Tapes', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
-  13: { title: 'The Wonderfully Weird World of Gumball', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt2.mp4', 'twwwog_s01e01_pt3.mp4'] },
-  14: { title: 'The Amazing World of Gumball', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
-  15: { title: 'Uncle Grandpa', files: ['uncle_grandpa.mp4'] },
-  16: { title: 'Regular Show (Original)', files: ['regular_show.mp4'] },
-  17: { title: 'Adventure Time', files: ['adventure_time.mp4'] },
-  20: { title: 'Adult Swim West', files: [], isLive: true, url: ADULT_SWIM_STREAM }
+  11: { title: 'Cartoon Network Morning Block', rating: 'TV-G', ratingImg: 'tv_g.png', files: ['cn_sign_on.mp4'] },
+  12: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
+  13: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt2.mp4', 'twwwog_s01e01_pt3.mp4'] },
+  14: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
+  15: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['uncle_grandpa.mp4'] },
+  16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['regular_show.mp4'] },
+  17: { title: 'Adventure Time', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['adventure_time.mp4'] },
+  20: { title: 'Adult Swim West', rating: 'TV-MA', ratingImg: 'tv_ma.png', isLive: true, url: ADULT_SWIM_STREAM }
 };
 
 let ffmpegProcess = null;
 let currentSlot = null;
 
-// Reliable Eastern Time hour retriever (0 - 23)
+// Reliable Eastern Time (America/New_York) hour retriever (0 - 23)
 function getETHour() {
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -66,15 +67,14 @@ function getETHour() {
 function getScheduleSource() {
   const hour = getETHour();
 
-  // Check if current hour falls within schedule
   if (SHOW_SCHEDULE[hour]) {
     const show = SHOW_SCHEDULE[hour];
 
-    // Check if slot is a live network stream (e.g., Adult Swim at 8 PM ET)
+    // Live network stream slot (e.g. Adult Swim at 8:00 PM ET)
     if (show.isLive) {
       currentSlot = `show_${hour}`;
       console.log(`[Schedule] ${hour}:00 ET - Airing Live Stream: ${show.title}`);
-      return { source: show.url, isConcat: false, isLooping: false };
+      return { source: show.url, ratingImg: show.ratingImg, isConcat: false, isLooping: false };
     }
 
     const existingFiles = show.files
@@ -85,26 +85,26 @@ function getScheduleSource() {
     console.log(`[Schedule] ${hour}:00 ET - Airing: ${show.title}`);
 
     if (existingFiles.length > 0) {
-      // Multiple parts: build an FFmpeg concat list text file
+      // Build FFmpeg concat list if multiple files exist
       if (existingFiles.length > 1) {
         const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
         const fileContent = existingFiles.map(f => `file '${f}'`).join('\n');
         fs.writeFileSync(concatListPath, fileContent);
         
-        return { source: concatListPath, isConcat: true, isLooping: true };
+        return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
       }
-      return { source: existingFiles[0], isConcat: false, isLooping: true };
+      return { source: existingFiles[0], ratingImg: show.ratingImg, isConcat: false, isLooping: true };
     } else {
       console.log(`[Schedule Warning] Files missing for "${show.title}". Playing technical difficulties.`);
       const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
-      return { source: fallback, isConcat: false, isLooping: true };
+      return { source: fallback, ratingImg: null, isConcat: false, isLooping: true };
     }
   }
 
-  // Outside scheduled hours: Fall back to default primary live stream
+  // Outside scheduled hours: Default to Adult Swim live stream
   currentSlot = 'off_block';
   console.log(`[Schedule] ${hour}:00 ET - Outside primary daytime block. Airing live stream feed.`);
-  return { source: ADULT_SWIM_STREAM, isConcat: false, isLooping: false };
+  return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
 }
 
 function stopFFmpeg() {
@@ -115,52 +115,50 @@ function stopFFmpeg() {
   }
 }
 
-function startFFmpeg(inputSource, isLooping = false, isConcat = false) {
+function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
   console.log(`[Node] Starting FFmpeg process. Source: ${inputSource}`);
 
   const args = ['-y', '-loglevel', 'warning'];
 
-  if (isLooping) {
-    args.push('-stream_loop', '-1');
-  }
+  if (isLooping) args.push('-stream_loop', '-1');
+  if (isConcat) args.push('-f', 'concat', '-safe', '0');
 
-  // If input is a multi-part concat list, add format flags
-  if (isConcat) {
-    args.push('-f', 'concat', '-safe', '0');
-  }
-
-  // Input 0: Main video content
+  // Input 0: Main Video Stream/File
   args.push('-i', inputSource);
 
+  const ratingPath = ratingImgName ? path.join(__dirname, 'public', ratingImgName) : null;
+  const hasRating = ratingPath && fs.existsSync(ratingPath);
   const hasBug = fs.existsSync(SCREENBUG_IMAGE);
 
-  // Input 1: Screenbug overlay image (if present)
-  if (hasBug) {
-    args.push('-i', SCREENBUG_IMAGE);
+  // Input 1 & 2: Overlays
+  if (hasRating) args.push('-i', ratingPath);
+  if (hasBug) args.push('-i', SCREENBUG_IMAGE);
+
+  // Build filter complex for Rating (top-left) and Screenbug (bottom-right)
+  let filterComplex = '';
+
+  if (hasRating && hasBug) {
+    filterComplex = '[1:v]scale=90:-1[rating];[2:v]scale=110:-1[bug];[0:v][rating]overlay=30:30[tmp];[tmp][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
+  } else if (hasRating) {
+    filterComplex = '[1:v]scale=90:-1[rating];[0:v][rating]overlay=30:30';
+  } else if (hasBug) {
+    filterComplex = '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
   }
 
-  // Overlay screenbug bottom-right if available
-  if (hasBug) {
-    args.push(
-      '-filter_complex', '[1:v]scale=200:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20'
-    );
+  if (filterComplex) {
+    args.push('-filter_complex', filterComplex);
   }
 
   args.push(
-    // Video encoding settings
     '-threads', '1',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
     '-crf', '28',
-    
-    // Audio encoding settings
     '-c:a', 'aac',
     '-b:a', '96k',
-    
-    // HLS segmenting flags
     '-f', 'hls',
     '-hls_time', '4',
     '-hls_list_size', '5',
@@ -176,20 +174,18 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false) {
 
   ffmpegProcess.on('close', (code, signal) => {
     console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
-    
-    // Auto-restart stream on accidental crash or source finish
     setTimeout(() => {
       const active = getScheduleSource();
-      startFFmpeg(active.source, active.isLooping, active.isConcat);
+      startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
     }, 3000);
   });
 }
 
-// Initial boot initialization
+// Initial Boot Engine Initialization
 const initial = getScheduleSource();
-startFFmpeg(initial.source, initial.isLooping, initial.isConcat);
+startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
 
-// Schedule watcher: Checks every minute to trigger hourly transitions
+// Schedule watcher: Checks every minute for hourly block transitions
 setInterval(() => {
   const hour = getETHour();
   const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
@@ -197,22 +193,34 @@ setInterval(() => {
   if (expectedSlot !== currentSlot) {
     console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching block...`);
     const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping, active.isConcat);
+    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
   }
 }, 60 * 1000);
 
-// API: Schedule Endpoint
+// API: Complete Schedule Endpoint
 app.get('/api/schedule', (req, res) => {
   res.json(SHOW_SCHEDULE);
 });
 
-// API: Currently active program
+// API: Current Show and Rating Information (for index.html and EPGs)
 app.get('/api/now-playing', (req, res) => {
   const hour = getETHour();
-  const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live', files: [] };
+  const currentShow = SHOW_SCHEDULE[hour] || { 
+    title: 'Adult Swim West Live', 
+    rating: 'TV-MA', 
+    files: [] 
+  };
+
+  const fileList = (currentShow.files && currentShow.files.length > 0)
+    ? currentShow.files.map(f => `/Shows/${f}`)
+    : ['/public/hls/index.m3u8'];
+
   res.json({
-    time: `${hour}:00 ET`,
-    ...currentShow
+    show: currentShow.title || 'Cartoon Network',
+    rating: currentShow.rating || 'TV-G',
+    title: `Airing at ${hour}:00 ET`,
+    file: fileList[0],
+    playlist: fileList
   });
 });
 
@@ -221,7 +229,7 @@ app.get('/health', (req, res) => {
   res.send('Cartoon Network Webchannel Stream Server is Running.');
 });
 
-// Fallback route to serve index.html or HLS player
+// Fallback Route: Serve index.html or redirect to live stream
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
@@ -234,3 +242,4 @@ app.get('*', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Server listening on port ${PORT}`);
 });
+      
