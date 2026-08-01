@@ -41,7 +41,7 @@ const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnerme
 const SHOW_SCHEDULE = {
   11: { title: 'Cartoon Network Morning Block', rating: 'TV-G', ratingImg: 'tv_g.png', files: ['cn_sign_on.mp4'] },
   12: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
-  13: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt2.mp4', 'twwwog_s01e01_pt3.mp4'] },
+  13: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt3.mp4', 'twwwog_s01e01_pt2.mp4'] },
   14: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
   15: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['uncle_grandpa.mp4'] },
   16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['regular_show.mp4'] },
