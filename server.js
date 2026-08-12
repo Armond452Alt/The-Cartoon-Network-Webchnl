@@ -16,9 +16,10 @@ app.use((req, res, next) => {
 // Ensure required public directories exist
 const publicDir = path.join(__dirname, 'public');
 const showsDir = path.join(__dirname, 'public/Shows');
+const bumpersDir = path.join(__dirname, 'public/bumpers');
 const hlsOutputDir = path.join(__dirname, 'public/hls');
 
-[publicDir, showsDir, hlsOutputDir].forEach(dir => {
+[publicDir, showsDir, bumpersDir, hlsOutputDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -31,21 +32,24 @@ app.use(express.static(publicDir));
 // Fallback Video, Bug, & Rating Assets Configuration
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
+const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
 const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
 // Default Live Stream Fallback (Outside daytime schedule)
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
 
-// Schedule mapping to your graphic overlays (11 AM - 8 PM ET)
+// Schedule mapping to graphic overlays & bumpers (9 AM - 8 PM ET)
 const SHOW_SCHEDULE = {
-  9: { title: 'Cartoon Network Morning Block', rating: 'TV-G', ratingImg: 'tv_g.png', files: ['cn_sign_on.mp4'] },
-  12: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
-  13: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt3.mp4', 'twwwog_s01e01_pt2.mp4'] },
-  14: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
-  15: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', files: ['uncle_grandpa.mp4'] },
-  16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['regular_show.mp4'] },
-  17: { title: 'Adventure Time', rating: 'TV-PG', ratingImg: 'tv_pg.png', files: ['adventure_time.mp4'] },
+  9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
+  10: { title: 'Cartoon Network Morning Block', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_morning_block.mp4'] },
+  11: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
+  12: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', bumper: 'twwwog.mp4', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt3.mp4', 'twwwog_s01e01_pt2.mp4'] },
+  13: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'tawog.mp4', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
+  14: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'UG.mp4', files: ['uncle_grandpa.mp4'] },
+  15: { title: 'Clarence', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_clarence.mp4', files: ['clarence_s03e01.mkv'] },
+  16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['regular_show.mp4'] },
+  17: { title: 'Adventure Time', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'adv.mp4', files: ['adventure_time.mp4'] },
   20: { title: 'Adult Swim West', rating: 'TV-MA', ratingImg: 'tv_ma.png', isLive: true, url: ADULT_SWIM_STREAM }
 };
 
@@ -61,6 +65,15 @@ function getETHour() {
   });
   const hour = parseInt(formatter.format(new Date()), 10);
   return hour === 24 ? 0 : hour;
+}
+
+// Resolves specific show bumper or defaults to next_bumper.mp4
+function getBumperPath(bumperFilename) {
+  if (bumperFilename) {
+    const customBumper = path.join(bumpersDir, bumperFilename);
+    if (fs.existsSync(customBumper)) return customBumper;
+  }
+  return fs.existsSync(DEFAULT_BUMPER) ? DEFAULT_BUMPER : null;
 }
 
 // Get video source based on current Eastern Time schedule
@@ -85,14 +98,27 @@ function getScheduleSource() {
     console.log(`[Schedule] ${hour}:00 ET - Airing: ${show.title}`);
 
     if (existingFiles.length > 0) {
-      // Build FFmpeg concat list if multiple files exist
-      if (existingFiles.length > 1) {
+      const activeBumper = getBumperPath(show.bumper);
+
+      // Concat mode: If multiple show parts exist OR if a bumper is attached to a file
+      if (existingFiles.length > 1 || activeBumper) {
         const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
-        const fileContent = existingFiles.map(f => `file '${f}'`).join('\n');
-        fs.writeFileSync(concatListPath, fileContent);
-        
+        let concatLines = [];
+
+        existingFiles.forEach((file, idx) => {
+          // Interleave bumper before each part segment (or before subsequent parts)
+          if (activeBumper && idx > 0) {
+            concatLines.push(`file '${activeBumper}'`);
+          }
+          concatLines.push(`file '${file}'`);
+        });
+
+        fs.writeFileSync(concatListPath, concatLines.join('\n'));
+        console.log(`[Schedule] Created concat list with ${concatLines.length} entries for ${show.title}`);
+
         return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
       }
+
       return { source: existingFiles[0], ratingImg: show.ratingImg, isConcat: false, isLooping: true };
     } else {
       console.log(`[Schedule Warning] Files missing for "${show.title}". Playing technical difficulties.`);
@@ -136,7 +162,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
-  // Filter complex: Scales rating to 350px width, overlays at 20:20 top-left, and hides after 5 seconds
+  // Filter complex: Scales rating to 350px width, overlays at 20:20 top-left, hides after 5s
   let filterComplex = '';
 
   if (hasRating && hasBug) {
