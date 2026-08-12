@@ -267,4 +267,16 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Server listening on port ${PORT}`);
+
+  // Self-ping service to prevent Render free instance from going to sleep
+  const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://the-cartoon-network-webchnl.onrender.com';
+  
+  setInterval(async () => {
+    try {
+      const res = await fetch(`${RENDER_EXTERNAL_URL}/health`);
+      console.log(`[Self-Ping] Status: ${res.status}`);
+    } catch (err) {
+      console.error(`[Self-Ping Error]:`, err.message);
+    }
+  }, 10 * 60 * 1000); // Sends a keep-alive ping every 10 minutes
 });
