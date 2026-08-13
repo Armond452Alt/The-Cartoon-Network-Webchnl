@@ -144,7 +144,7 @@ function stopFFmpeg() {
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
-  console.log(`[Node] Starting FFmpeg process. Source: ${inputSource}`);
+  console.log(`[Node] Starting 1440p QHD FFmpeg process. Source: ${inputSource}`);
 
   const args = ['-y', '-loglevel', 'warning'];
 
@@ -162,29 +162,41 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
-  // Filter complex: Scales rating to 350px width, overlays at 20:20 top-left, hides after 5s
+  // Build Filter Complex for 1440p Canvas Scaling + Resized Graphic Bug Overlays
   let filterComplex = '';
 
+  // Step 1: Scale Base Video Stream to crisp 2560x1440 canvas
+  const scaleBaseVideo = '[0:v]scale=2560:1440:force_original_aspect_ratio=decrease,pad=2560:1440:(ow-iw)/2:(oh-ih)/2[bg];';
+
   if (hasRating && hasBug) {
-    filterComplex = '[1:v]scale=350:-1[rating];[2:v]scale=110:-1[bug];[0:v][rating]overlay=20:20:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
+    // Rating bug (top-left, 270px width, 5s duration) and screen bug (bottom-right, 180px width)
+    filterComplex = scaleBaseVideo + '[1:v]scale=270:-1[rating];[2:v]scale=180:-1[bug];[bg][rating]overlay=80:80:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-80:main_h-overlay_h-80';
   } else if (hasRating) {
-    filterComplex = '[1:v]scale=350:-1[rating];[0:v][rating]overlay=20:20:enable=\'between(t,0,5)\'';
+    // Rating bug only (top-left, 270px width, 5s duration)
+    filterComplex = scaleBaseVideo + '[1:v]scale=270:-1[rating];[bg][rating]overlay=80:80:enable=\'between(t,0,5)\'';
   } else if (hasBug) {
-    filterComplex = '[1:v]scale=110:-1[bug];[0:v][bug]overlay=main_w-overlay_w-20:main_h-overlay_h-20';
+    // Screen bug only (bottom-right, 180px width)
+    filterComplex = scaleBaseVideo + '[1:v]scale=180:-1[bug];[bg][bug]overlay=main_w-overlay_w-80:main_h-overlay_h-80';
+  } else {
+    // Video scaling only (no overlay assets present)
+    filterComplex = '[0:v]scale=2560:1440:force_original_aspect_ratio=decrease,pad=2560:1440:(ow-iw)/2:(oh-ih)/2';
   }
 
-  if (filterComplex) {
-    args.push('-filter_complex', filterComplex);
-  }
+  args.push('-filter_complex', filterComplex);
 
+  // 1440p Video & Audio Encoding Parameters
   args.push(
-    '-threads', '1',
+    '-threads', '2',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-crf', '28',
+    '-b:v', '8000k',
+    '-maxrate', '10000k',
+    '-bufsize', '16000k',
+    '-pix_fmt', 'yuv420p',
     '-c:a', 'aac',
-    '-b:a', '96k',
+    '-b:a', '192k',
+    '-ar', '48000',
     '-f', 'hls',
     '-hls_time', '4',
     '-hls_list_size', '5',
