@@ -6,14 +6,15 @@ const { spawn } = require('child_process');
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Enable CORS using native Express middleware
+// Enable CORS for all web players, Xbox Edge, and external players
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   next();
 });
 
-// Ensure required public directories exist
+// Directory layout setup
 const publicDir = path.join(__dirname, 'public');
 const showsDir = path.join(__dirname, 'public/Shows');
 const bumpersDir = path.join(__dirname, 'public/bumpers');
@@ -25,21 +26,20 @@ const hlsOutputDir = path.join(__dirname, 'public/hls');
   }
 });
 
-// Serve static assets and HLS directory
+// Serve public directory and HLS output explicitly with static CORS
 app.use('/public', express.static(publicDir));
 app.use(express.static(publicDir));
 
-// Fallback Video, Bug, & Rating Assets Configuration
+// Asset Configuration
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
 const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
 const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
-// Default Live Stream Fallback (Outside daytime schedule)
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
 
-// Schedule mapping to graphic overlays (9 AM - 8 PM ET)
+// Schedule mapping
 const SHOW_SCHEDULE = {
   9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
   10: { 
@@ -66,7 +66,6 @@ const SHOW_SCHEDULE = {
 let ffmpegProcess = null;
 let currentSlot = null;
 
-// Reliable Eastern Time (America/New_York) hour retriever (0 - 23)
 function getETHour() {
   const formatter = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
@@ -77,7 +76,6 @@ function getETHour() {
   return hour === 24 ? 0 : hour;
 }
 
-// Resolves specific show bumper or defaults to next_bumper.mp4
 function getBumperPath(bumperFilename) {
   if (bumperFilename) {
     const customBumper = path.join(bumpersDir, bumperFilename);
@@ -86,18 +84,14 @@ function getBumperPath(bumperFilename) {
   return fs.existsSync(DEFAULT_BUMPER) ? DEFAULT_BUMPER : null;
 }
 
-// Get video source based on current Eastern Time schedule
 function getScheduleSource() {
   const hour = getETHour();
 
   if (SHOW_SCHEDULE[hour]) {
     const show = SHOW_SCHEDULE[hour];
 
-    // Multi-URL streaming (Concat multiple remote Archive.org links)
     if (show.isMultiUrl && Array.isArray(show.urls)) {
       currentSlot = `show_${hour}`;
-      console.log(`[Schedule] ${hour}:00 ET - Airing Multi-Episode Block: ${show.title}`);
-
       const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
       const activeBumper = getBumperPath(show.bumper);
       let concatLines = [];
@@ -113,10 +107,8 @@ function getScheduleSource() {
       return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
     }
 
-    // Live network stream slot (e.g. Adult Swim at 8:00 PM ET)
     if (show.isLive) {
       currentSlot = `show_${hour}`;
-      console.log(`[Schedule] ${hour}:00 ET - Airing Live Stream: ${show.title}`);
       return { source: show.url, ratingImg: show.ratingImg, isConcat: false, isLooping: false };
     }
 
@@ -125,7 +117,6 @@ function getScheduleSource() {
       .filter(filePath => fs.existsSync(filePath));
 
     currentSlot = `show_${hour}`;
-    console.log(`[Schedule] ${hour}:00 ET - Airing: ${show.title}`);
 
     if (existingFiles.length > 0) {
       const activeBumper = getBumperPath(show.bumper);
@@ -142,22 +133,17 @@ function getScheduleSource() {
         });
 
         fs.writeFileSync(concatListPath, concatLines.join('\n'));
-        console.log(`[Schedule] Created concat list with ${concatLines.length} entries for ${show.title}`);
-
         return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
       }
 
       return { source: existingFiles[0], ratingImg: show.ratingImg, isConcat: false, isLooping: true };
     } else {
-      console.log(`[Schedule Warning] Files missing for "${show.title}". Playing technical difficulties.`);
       const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
       return { source: fallback, ratingImg: null, isConcat: false, isLooping: true };
     }
   }
 
-  // Outside scheduled hours: Default to Adult Swim live stream
   currentSlot = 'off_block';
-  console.log(`[Schedule] ${hour}:00 ET - Outside primary daytime block. Airing live stream feed.`);
   return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
 }
 
@@ -172,70 +158,66 @@ function stopFFmpeg() {
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
-  console.log(`[Node] Starting 1440p QHD FFmpeg process. Source: ${inputSource}`);
+  console.log(`[FFmpeg] Starting web-compatible HLS stream (.m3u8). Source: ${inputSource}`);
 
-  const args = ['-y', '-loglevel', 'warning'];
+  const args = [
+    '-y',
+    '-loglevel', 'warning',
+    '-fflags', '+genpts'
+  ];
 
   if (isLooping) args.push('-stream_loop', '-1');
   if (isConcat) args.push('-f', 'concat', '-safe', '0');
 
-  // Input 0: Main Video Stream/File/Concat List
   args.push('-i', inputSource);
 
   const ratingPath = ratingImgName ? path.join(__dirname, 'public', ratingImgName) : null;
   const hasRating = ratingPath && fs.existsSync(ratingPath);
   const hasBug = fs.existsSync(SCREENBUG_IMAGE);
 
-  // Input 1 & 2: Overlays
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
-  // Build Filter Complex for 1440p Canvas Scaling + Resized Graphic Bug Overlays
+  const scaleBaseVideo = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];';
   let filterComplex = '';
 
-  // Step 1: Scale Base Video Stream to crisp 2560x1440 canvas
-  const scaleBaseVideo = '[0:v]scale=2560:1440:force_original_aspect_ratio=decrease,pad=2560:1440:(ow-iw)/2:(oh-ih)/2[bg];';
-
   if (hasRating && hasBug) {
-    // Rating bug (top-left, 270px width, 5s duration) and screen bug (bottom-right, 180px width)
-    filterComplex = scaleBaseVideo + '[1:v]scale=270:-1[rating];[2:v]scale=180:-1[bug];[bg][rating]overlay=80:80:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-80:main_h-overlay_h-80';
+    filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[2:v]scale=135:-1[bug];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-60:main_h-overlay_h-60';
   } else if (hasRating) {
-    // Rating bug only (top-left, 270px width, 5s duration)
-    filterComplex = scaleBaseVideo + '[1:v]scale=270:-1[rating];[bg][rating]overlay=80:80:enable=\'between(t,0,5)\'';
+    filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'';
   } else if (hasBug) {
-    // Screen bug only (bottom-right, 180px width)
-    filterComplex = scaleBaseVideo + '[1:v]scale=180:-1[bug];[bg][bug]overlay=main_w-overlay_w-80:main_h-overlay_h-80';
+    filterComplex = scaleBaseVideo + '[1:v]scale=135:-1[bug];[bg][bug]overlay=main_w-overlay_w-60:main_h-overlay_h-60';
   } else {
-    // Video scaling only (no overlay assets present)
-    filterComplex = '[0:v]scale=2560:1440:force_original_aspect_ratio=decrease,pad=2560:1440:(ow-iw)/2:(oh-ih)/2';
+    filterComplex = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2';
   }
 
   args.push('-filter_complex', filterComplex);
 
-  // 1440p Video & Audio Encoding Parameters
+  // Standard Web / Xbox Edge HLS (.m3u8) output flags
   args.push(
     '-threads', '2',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-profile:v', 'high',        // Force High Profile
-    '-level:v', '4.2',           // Level 4.2 supports up to 1440p@30fps cleanly
-    '-pix_fmt', 'yuv420p',       // Ensure 8-bit YUV 4:2:0 format
-    '-b:v', '8000k',
-    '-maxrate', '10000k',
-    '-bufsize', '16000k',
+    '-profile:v', 'main',
+    '-level:v', '4.1',
+    '-pix_fmt', 'yuv420p',
+    '-b:v', '3500k',
+    '-maxrate', '4500k',
+    '-bufsize', '7000k',
     '-c:a', 'aac',
-    '-b:a', '192k',
-    '-ar', '48000',
-    '-ac', '2',                  // Force stereo audio (prevents multi-channel errors)
+    '-b:a', '128k',
+    '-ar', '44100',
+    '-ac', '2',
+    '-af', 'aresample=async=1',
     '-f', 'hls',
     '-hls_time', '4',
-    '-hls_list_size', '5',
+    '-hls_list_size', '6',
     '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_segment_type', 'mpegts',
     HLS_OUTPUT_FILE
   );
-  
+
   ffmpegProcess = spawn('ffmpeg', args);
 
   ffmpegProcess.stderr.on('data', (data) => {
@@ -251,76 +233,345 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   });
 }
 
-// Initial Boot Engine Initialization
 const initial = getScheduleSource();
 startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
 
-// Schedule watcher: Checks every minute for hourly block transitions
 setInterval(() => {
   const hour = getETHour();
   const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
 
   if (expectedSlot !== currentSlot) {
-    console.log(`[Schedule Alert] Time is now ${hour}:00 ET. Switching block...`);
     const active = getScheduleSource();
     startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
   }
 }, 60 * 1000);
 
-// API: Complete Schedule Endpoint
-app.get('/api/schedule', (req, res) => {
-  res.json(SHOW_SCHEDULE);
-});
+app.get('/api/schedule', (req, res) => res.json(SHOW_SCHEDULE));
 
-// API: Current Show and Rating Information
 app.get('/api/now-playing', (req, res) => {
   const hour = getETHour();
-  const currentShow = SHOW_SCHEDULE[hour] || { 
-    title: 'Adult Swim West Live', 
-    rating: 'TV-MA', 
-    files: [] 
-  };
-
+  const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live', rating: 'TV-MA', files: [] };
   const fileList = (currentShow.files && currentShow.files.length > 0)
     ? currentShow.files.map(f => `/Shows/${f}`)
-    : (currentShow.urls || ['/public/hls/index.m3u8']);
+    : (currentShow.urls || ['/hls/index.m3u8']);
 
   res.json({
     show: currentShow.title || 'Cartoon Network',
     rating: currentShow.rating || 'TV-G',
     title: `Airing at ${hour}:00 ET`,
     file: fileList[0],
-    playlist: fileList
+    m3u8Url: '/hls/index.m3u8'
   });
 });
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.send('Cartoon Network Webchannel Stream Server is Running.');
-});
+app.get('/health', (req, res) => res.send('Cartoon Network Webchannel Stream Server is Running.'));
 
-// Fallback Route: Serve index.html or redirect to live stream
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
   } else {
-    res.redirect('/public/hls/index.m3u8');
+    res.redirect('/hls/index.m3u8');
   }
 });
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Server listening on port ${PORT}`);
-
-  // Self-ping service to prevent Render free instance from going to sleep
   const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://the-cartoon-network-webchnl.onrender.com';
   
   setInterval(async () => {
     try {
-      const res = await fetch(`${RENDER_EXTERNAL_URL}/health`);
-      console.log(`[Self-Ping] Status: ${res.status}`);
+      await fetch(`${RENDER_EXTERNAL_URL}/health`);
     } catch (err) {
       console.error(`[Self-Ping Error]:`, err.message);
     }
-  }, 10 * 60 * 1000); // Sends a keep-alive ping every 10 minutes
+  }, 10 * 60 * 1000);
+});const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
+
+const app = express();
+const PORT = process.env.PORT || 10000;
+
+// Enable CORS for all web players, Xbox Edge, and external players
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  next();
+});
+
+// Directory layout setup
+const publicDir = path.join(__dirname, 'public');
+const showsDir = path.join(__dirname, 'public/Shows');
+const bumpersDir = path.join(__dirname, 'public/bumpers');
+const hlsOutputDir = path.join(__dirname, 'public/hls');
+
+[publicDir, showsDir, bumpersDir, hlsOutputDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// Serve public directory and HLS output explicitly with static CORS
+app.use('/public', express.static(publicDir));
+app.use(express.static(publicDir));
+
+// Asset Configuration
+const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
+const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
+const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
+const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
+const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
+
+const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
+
+// Schedule mapping
+const SHOW_SCHEDULE = {
+  9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
+  10: { 
+    title: "Foster's Home for Imaginary Friends (S06E08 & S06E09)", 
+    rating: 'TV-Y7', 
+    ratingImg: 'tv_y7.png', 
+    bumper: 'fhoif.mp4', 
+    isMultiUrl: true,
+    urls: [
+      'https://ia802900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E08.mp4',
+      'https://ia902900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E09.mp4'
+    ]
+  },
+  11: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
+  12: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', bumper: 'twwwog.mp4', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt3.mp4', 'twwwog_s01e01_pt2.mp4'] },
+  13: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'tawog.mp4', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
+  14: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'UG.mp4', files: ['uncle_grandpa.mp4'] },
+  15: { title: 'Clarence', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_clarence.mp4', files: ['part_01.mp4', 'part_02.mp4', 'part_03.mp4'] },
+  16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['regular_show.mp4'] },
+  17: { title: 'Adventure Time', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'adv.mp4', files: ['adventure_time.mp4'] },
+  20: { title: 'Adult Swim West', rating: 'TV-MA', ratingImg: 'tv_ma.png', isLive: true, url: ADULT_SWIM_STREAM }
+};
+
+let ffmpegProcess = null;
+let currentSlot = null;
+
+function getETHour() {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    hour12: false
+  });
+  const hour = parseInt(formatter.format(new Date()), 10);
+  return hour === 24 ? 0 : hour;
+}
+
+function getBumperPath(bumperFilename) {
+  if (bumperFilename) {
+    const customBumper = path.join(bumpersDir, bumperFilename);
+    if (fs.existsSync(customBumper)) return customBumper;
+  }
+  return fs.existsSync(DEFAULT_BUMPER) ? DEFAULT_BUMPER : null;
+}
+
+function getScheduleSource() {
+  const hour = getETHour();
+
+  if (SHOW_SCHEDULE[hour]) {
+    const show = SHOW_SCHEDULE[hour];
+
+    if (show.isMultiUrl && Array.isArray(show.urls)) {
+      currentSlot = `show_${hour}`;
+      const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
+      const activeBumper = getBumperPath(show.bumper);
+      let concatLines = [];
+
+      show.urls.forEach((url, idx) => {
+        if (activeBumper && idx > 0) {
+          concatLines.push(`file '${activeBumper}'`);
+        }
+        concatLines.push(`file '${url}'`);
+      });
+
+      fs.writeFileSync(concatListPath, concatLines.join('\n'));
+      return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
+    }
+
+    if (show.isLive) {
+      currentSlot = `show_${hour}`;
+      return { source: show.url, ratingImg: show.ratingImg, isConcat: false, isLooping: false };
+    }
+
+    const existingFiles = (show.files || [])
+      .map(file => path.join(showsDir, file))
+      .filter(filePath => fs.existsSync(filePath));
+
+    currentSlot = `show_${hour}`;
+
+    if (existingFiles.length > 0) {
+      const activeBumper = getBumperPath(show.bumper);
+
+      if (existingFiles.length > 1 || activeBumper) {
+        const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
+        let concatLines = [];
+
+        existingFiles.forEach((file, idx) => {
+          if (activeBumper && idx > 0) {
+            concatLines.push(`file '${activeBumper}'`);
+          }
+          concatLines.push(`file '${file}'`);
+        });
+
+        fs.writeFileSync(concatListPath, concatLines.join('\n'));
+        return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
+      }
+
+      return { source: existingFiles[0], ratingImg: show.ratingImg, isConcat: false, isLooping: true };
+    } else {
+      const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
+      return { source: fallback, ratingImg: null, isConcat: false, isLooping: true };
+    }
+  }
+
+  currentSlot = 'off_block';
+  return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
+}
+
+function stopFFmpeg() {
+  if (ffmpegProcess) {
+    ffmpegProcess.removeAllListeners('close');
+    ffmpegProcess.kill('SIGKILL');
+    ffmpegProcess = null;
+  }
+}
+
+function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
+  stopFFmpeg();
+
+  console.log(`[FFmpeg] Starting web-compatible HLS stream (.m3u8). Source: ${inputSource}`);
+
+  const args = [
+    '-y',
+    '-loglevel', 'warning',
+    '-fflags', '+genpts'
+  ];
+
+  if (isLooping) args.push('-stream_loop', '-1');
+  if (isConcat) args.push('-f', 'concat', '-safe', '0');
+
+  args.push('-i', inputSource);
+
+  const ratingPath = ratingImgName ? path.join(__dirname, 'public', ratingImgName) : null;
+  const hasRating = ratingPath && fs.existsSync(ratingPath);
+  const hasBug = fs.existsSync(SCREENBUG_IMAGE);
+
+  if (hasRating) args.push('-i', ratingPath);
+  if (hasBug) args.push('-i', SCREENBUG_IMAGE);
+
+  const scaleBaseVideo = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];';
+  let filterComplex = '';
+
+  if (hasRating && hasBug) {
+    filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[2:v]scale=135:-1[bug];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-60:main_h-overlay_h-60';
+  } else if (hasRating) {
+    filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'';
+  } else if (hasBug) {
+    filterComplex = scaleBaseVideo + '[1:v]scale=135:-1[bug];[bg][bug]overlay=main_w-overlay_w-60:main_h-overlay_h-60';
+  } else {
+    filterComplex = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2';
+  }
+
+  args.push('-filter_complex', filterComplex);
+
+  // Standard Web / Xbox Edge HLS (.m3u8) output flags
+  args.push(
+    '-threads', '2',
+    '-c:v', 'libx264',
+    '-preset', 'ultrafast',
+    '-tune', 'zerolatency',
+    '-profile:v', 'main',
+    '-level:v', '4.1',
+    '-pix_fmt', 'yuv420p',
+    '-b:v', '3500k',
+    '-maxrate', '4500k',
+    '-bufsize', '7000k',
+    '-c:a', 'aac',
+    '-b:a', '128k',
+    '-ar', '44100',
+    '-ac', '2',
+    '-af', 'aresample=async=1',
+    '-f', 'hls',
+    '-hls_time', '4',
+    '-hls_list_size', '6',
+    '-hls_flags', 'delete_segments+omit_endlist',
+    '-hls_segment_type', 'mpegts',
+    HLS_OUTPUT_FILE
+  );
+
+  ffmpegProcess = spawn('ffmpeg', args);
+
+  ffmpegProcess.stderr.on('data', (data) => {
+    console.log(`[FFmpeg LOG]: ${data.toString().trim()}`);
+  });
+
+  ffmpegProcess.on('close', (code, signal) => {
+    console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
+    setTimeout(() => {
+      const active = getScheduleSource();
+      startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
+    }, 3000);
+  });
+}
+
+const initial = getScheduleSource();
+startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
+
+setInterval(() => {
+  const hour = getETHour();
+  const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
+
+  if (expectedSlot !== currentSlot) {
+    const active = getScheduleSource();
+    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
+  }
+}, 60 * 1000);
+
+app.get('/api/schedule', (req, res) => res.json(SHOW_SCHEDULE));
+
+app.get('/api/now-playing', (req, res) => {
+  const hour = getETHour();
+  const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live', rating: 'TV-MA', files: [] };
+  const fileList = (currentShow.files && currentShow.files.length > 0)
+    ? currentShow.files.map(f => `/Shows/${f}`)
+    : (currentShow.urls || ['/hls/index.m3u8']);
+
+  res.json({
+    show: currentShow.title || 'Cartoon Network',
+    rating: currentShow.rating || 'TV-G',
+    title: `Airing at ${hour}:00 ET`,
+    file: fileList[0],
+    m3u8Url: '/hls/index.m3u8'
+  });
+});
+
+app.get('/health', (req, res) => res.send('Cartoon Network Webchannel Stream Server is Running.'));
+
+app.get('*', (req, res) => {
+  const indexPath = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.redirect('/hls/index.m3u8');
+  }
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`[Node] Server listening on port ${PORT}`);
+  const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://the-cartoon-network-webchnl.onrender.com';
+  
+  setInterval(async () => {
+    try {
+      await fetch(`${RENDER_EXTERNAL_URL}/health`);
+    } catch (err) {
+      console.error(`[Self-Ping Error]:`, err.message);
+    }
+  }, 10 * 60 * 1000);
 });
