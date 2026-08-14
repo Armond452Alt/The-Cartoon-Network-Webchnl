@@ -218,20 +218,24 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
+    '-profile:v', 'high',        // Force High Profile
+    '-level:v', '4.2',           // Level 4.2 supports up to 1440p@30fps cleanly
+    '-pix_fmt', 'yuv420p',       // Ensure 8-bit YUV 4:2:0 format
     '-b:v', '8000k',
     '-maxrate', '10000k',
     '-bufsize', '16000k',
-    '-pix_fmt', 'yuv420p',
     '-c:a', 'aac',
     '-b:a', '192k',
     '-ar', '48000',
+    '-ac', '2',                  // Force stereo audio (prevents multi-channel errors)
     '-f', 'hls',
     '-hls_time', '4',
     '-hls_list_size', '5',
-    '-hls_flags', 'delete_segments',
+    '-hls_flags', 'delete_segments+omit_endlist',
+    '-hls_segment_type', 'mpegts',
     HLS_OUTPUT_FILE
   );
-
+  
   ffmpegProcess = spawn('ffmpeg', args);
 
   ffmpegProcess.stderr.on('data', (data) => {
