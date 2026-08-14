@@ -39,10 +39,20 @@ const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 // Default Live Stream Fallback (Outside daytime schedule)
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
 
-// Schedule mapping to your graphic overlays (9 AM - 8 PM ET)
+// Schedule mapping to graphic overlays (9 AM - 8 PM ET)
 const SHOW_SCHEDULE = {
   9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
-  10: { title: 'Cartoon Network Morning Block', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_morning_block.mp4'] },
+  10: { 
+    title: "Foster's Home for Imaginary Friends (S06E08 & S06E09)", 
+    rating: 'TV-Y7', 
+    ratingImg: 'tv_y7.png', 
+    bumper: 'fhoif.mp4', 
+    isMultiUrl: true,
+    urls: [
+      'https://ia802900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E08.mp4',
+      'https://ia902900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E09.mp4'
+    ]
+  },
   11: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
   12: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', bumper: 'twwwog.mp4', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt3.mp4', 'twwwog_s01e01_pt2.mp4'] },
   13: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'tawog.mp4', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
@@ -83,6 +93,26 @@ function getScheduleSource() {
   if (SHOW_SCHEDULE[hour]) {
     const show = SHOW_SCHEDULE[hour];
 
+    // Multi-URL streaming (Concat multiple remote Archive.org links)
+    if (show.isMultiUrl && Array.isArray(show.urls)) {
+      currentSlot = `show_${hour}`;
+      console.log(`[Schedule] ${hour}:00 ET - Airing Multi-Episode Block: ${show.title}`);
+
+      const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
+      const activeBumper = getBumperPath(show.bumper);
+      let concatLines = [];
+
+      show.urls.forEach((url, idx) => {
+        if (activeBumper && idx > 0) {
+          concatLines.push(`file '${activeBumper}'`);
+        }
+        concatLines.push(`file '${url}'`);
+      });
+
+      fs.writeFileSync(concatListPath, concatLines.join('\n'));
+      return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
+    }
+
     // Live network stream slot (e.g. Adult Swim at 8:00 PM ET)
     if (show.isLive) {
       currentSlot = `show_${hour}`;
@@ -90,7 +120,7 @@ function getScheduleSource() {
       return { source: show.url, ratingImg: show.ratingImg, isConcat: false, isLooping: false };
     }
 
-    const existingFiles = show.files
+    const existingFiles = (show.files || [])
       .map(file => path.join(showsDir, file))
       .filter(filePath => fs.existsSync(filePath));
 
@@ -100,13 +130,11 @@ function getScheduleSource() {
     if (existingFiles.length > 0) {
       const activeBumper = getBumperPath(show.bumper);
 
-      // Concat mode: If multiple show parts exist OR if a bumper is attached to a file
       if (existingFiles.length > 1 || activeBumper) {
         const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
         let concatLines = [];
 
         existingFiles.forEach((file, idx) => {
-          // Interleave bumper before each part segment (or before subsequent parts)
           if (activeBumper && idx > 0) {
             concatLines.push(`file '${activeBumper}'`);
           }
@@ -151,7 +179,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (isLooping) args.push('-stream_loop', '-1');
   if (isConcat) args.push('-f', 'concat', '-safe', '0');
 
-  // Input 0: Main Video Stream/File
+  // Input 0: Main Video Stream/File/Concat List
   args.push('-i', inputSource);
 
   const ratingPath = ratingImgName ? path.join(__dirname, 'public', ratingImgName) : null;
@@ -251,7 +279,7 @@ app.get('/api/now-playing', (req, res) => {
 
   const fileList = (currentShow.files && currentShow.files.length > 0)
     ? currentShow.files.map(f => `/Shows/${f}`)
-    : ['/public/hls/index.m3u8'];
+    : (currentShow.urls || ['/public/hls/index.m3u8']);
 
   res.json({
     show: currentShow.title || 'Cartoon Network',
