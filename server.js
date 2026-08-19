@@ -252,10 +252,10 @@ app.get('/playlist.m3u', (req, res) => {
   const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live' };
 
   // Reads Render Environment Variables with default fallbacks
-  const tvgId = process.env.TVG_ID || 'CartoonNetwork.la@mx';
-  const tvgName = process.env.TVG_NAME || 'Cartoon Network';
-  const channelName = process.env.CHANNEL_NAME || 'Cartoon Network';
-  const groupTitle = process.env.GROUP_TITLE || 'Animation';
+  const tvgId = process.env.TVG_ID || 'CartoonNetworkOnWebchnl.us';
+  const tvgName = process.env.TVG_NAME || 'Cartoon Network Webchnl';
+  const channelName = process.env.CHANNEL_NAME || 'Cartoon Network Webchnl';
+  const groupTitle = process.env.GROUP_TITLE || 'Webchnl';
   const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
 
   res.setHeader('Content-Type', 'audio/x-mpegurl');
