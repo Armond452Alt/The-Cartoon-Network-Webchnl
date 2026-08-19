@@ -246,6 +246,29 @@ setInterval(() => {
   }
 }, 60 * 1000);
 
+// Dynamic M3U Playlist Endpoint (Render Environment Supported)
+app.get('/playlist.m3u', (req, res) => {
+  const hour = getETHour();
+  const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live' };
+
+  // Reads Render Environment Variables with default fallbacks
+  const tvgId = process.env.TVG_ID || 'CartoonNetwork.la@mx';
+  const tvgName = process.env.TVG_NAME || 'Cartoon Network';
+  const channelName = process.env.CHANNEL_NAME || 'Cartoon Network';
+  const groupTitle = process.env.GROUP_TITLE || 'Animation';
+  const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
+
+  res.setHeader('Content-Type', 'audio/x-mpegurl');
+  res.setHeader('Content-Disposition', 'inline; filename="playlist.m3u"');
+
+  const m3uContent = `#EXTM3U
+#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${hostUrl}/screenbug.png" group-title="${groupTitle}",${channelName} - ${currentShow.title}
+${hostUrl}/public/hls/index.m3u8
+`;
+
+  res.send(m3uContent);
+});
+
 app.get('/api/schedule', (req, res) => res.json(SHOW_SCHEDULE));
 
 app.get('/api/now-playing', (req, res) => {
@@ -278,7 +301,7 @@ app.get('*', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Server listening on port ${PORT}`);
   const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://the-cartoon-network-webchnl.onrender.com';
-  
+
   setInterval(async () => {
     try {
       await fetch(`${RENDER_EXTERNAL_URL}/health`);
