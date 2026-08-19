@@ -34,7 +34,7 @@ app.use(express.static(publicDir));
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
 const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
-const SCREENBUG_IMAGE = path.join(__dirname, 'public/screenbug.png');
+const SCREENBUG_IMAGE = process.env.LOGO_URL || 'https://chatgpt.com/backend-api/estuary/content?id=file_000000008b64822f80544585a7eb41a1&ts=496430&p=fs&cid=1&sig=0ce5306e751a113673e1c10d35afebdcc24581af018ae7ab2d117704bb47c3b1&v=0';
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
