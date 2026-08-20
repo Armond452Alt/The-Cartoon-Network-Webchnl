@@ -181,21 +181,23 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
   const scaleBaseVideo = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];';
-  const cnArabicBug = '[bug_raw]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];';
   
   let filterComplex = '';
 
   if (hasRating && hasBug) {
+    // 0 = video, 1 = rating, 2 = screenbug
     filterComplex = scaleBaseVideo + 
       '[1:v]scale=200:-1[rating];' + 
-      '[2:v]' + cnArabicBug + 
+      '[2:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];' + 
       '[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'[tmp];' + 
       '[tmp][bug]overlay=main_w-overlay_w-60:60';
   } else if (hasRating) {
+    // 0 = video, 1 = rating
     filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'';
   } else if (hasBug) {
+    // 0 = video, 1 = screenbug
     filterComplex = scaleBaseVideo + 
-      '[1:v]' + cnArabicBug + 
+      '[1:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];' + 
       '[bg][bug]overlay=main_w-overlay_w-60:60';
   } else {
     filterComplex = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2';
@@ -318,7 +320,7 @@ app.get(['/player_api.php', '/get.php'], (req, res) => {
   });
 });
 
-// Xtream Stream Direct Endpoint: /live/:username/:password/:stream_id.:ext
+// Xtream Stream Direct Endpoint: /live/:username/:password/:stream_id
 app.get('/live/:username/:password/:stream_id', (req, res) => {
   res.redirect('/public/hls/index.m3u8');
 });
