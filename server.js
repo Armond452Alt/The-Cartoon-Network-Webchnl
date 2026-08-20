@@ -2,9 +2,11 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+const NodeMediaServer = require('node-media-server');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
+const RTMP_PORT = process.env.RTMP_PORT || 1935;
 
 // Enable CORS for all web players, Xbox Edge, and external players
 app.use((req, res, next) => {
@@ -34,7 +36,7 @@ app.use(express.static(publicDir));
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
 const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
-const SCREENBUG_IMAGE = process.env.LOGO_URL || 'public/logo.png';
+const SCREENBUG_IMAGE = path.join(__dirname, 'public/logo.png');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
@@ -158,7 +160,7 @@ function stopFFmpeg() {
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
-  console.log(`[FFmpeg] Starting web-compatible HLS stream (.m3u8). Source: ${inputSource}`);
+  console.log(`[FFmpeg] Starting web-compatible HLS & RTMP stream. Source: ${inputSource}`);
 
   const args = [
     '-y',
@@ -179,21 +181,29 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
   const scaleBaseVideo = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];';
+  const cnArabicBug = '[bug_raw]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];';
+  
   let filterComplex = '';
 
   if (hasRating && hasBug) {
-    filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[2:v]scale=135:-1[bug];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'[tmp];[tmp][bug]overlay=main_w-overlay_w-60:main_h-overlay_h-60';
+    filterComplex = scaleBaseVideo + 
+      '[1:v]scale=200:-1[rating];' + 
+      '[2:v]' + cnArabicBug + 
+      '[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'[tmp];' + 
+      '[tmp][bug]overlay=main_w-overlay_w-60:60';
   } else if (hasRating) {
     filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'';
   } else if (hasBug) {
-    filterComplex = scaleBaseVideo + '[1:v]scale=135:-1[bug];[bg][bug]overlay=main_w-overlay_w-60:main_h-overlay_h-60';
+    filterComplex = scaleBaseVideo + 
+      '[1:v]' + cnArabicBug + 
+      '[bg][bug]overlay=main_w-overlay_w-60:60';
   } else {
     filterComplex = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2';
   }
 
   args.push('-filter_complex', filterComplex);
 
-  // Standard Web & Console HLS (.m3u8) output flags
+  // Common encoding flags
   args.push(
     '-threads', '2',
     '-c:v', 'libx264',
@@ -209,13 +219,19 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     '-b:a', '128k',
     '-ar', '44100',
     '-ac', '2',
-    '-af', 'aresample=async=1',
+    '-af', 'aresample=async=1'
+  );
+
+  // Dual output setup: HLS (.m3u8) + Local RTMP
+  args.push(
     '-f', 'hls',
     '-hls_time', '4',
     '-hls_list_size', '6',
     '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_segment_type', 'mpegts',
-    HLS_OUTPUT_FILE
+    HLS_OUTPUT_FILE,
+    '-f', 'flv',
+    `rtmp://127.0.0.1:${RTMP_PORT}/live/cnwebchannel`
   );
 
   ffmpegProcess = spawn('ffmpeg', args);
@@ -233,36 +249,99 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   });
 }
 
-const initial = getScheduleSource();
-startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
-
-setInterval(() => {
-  const hour = getETHour();
-  const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
-
-  if (expectedSlot !== currentSlot) {
-    const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
+// ----------------------------------------------------
+// RTMP Server Setup
+// ----------------------------------------------------
+const nmsConfig = {
+  rtmp: {
+    port: RTMP_PORT,
+    chunk_size: 60000,
+    gop_cache: true,
+    ping: 30,
+    ping_timeout: 60
   }
-}, 60 * 1000);
+};
+const nms = new NodeMediaServer(nmsConfig);
+nms.run();
 
-// Dynamic M3U Playlist Endpoint (Render Environment Supported)
+// ----------------------------------------------------
+// Xtream Codes Emulation API
+// ----------------------------------------------------
+app.get(['/player_api.php', '/get.php'], (req, res) => {
+  const username = req.query.username || 'user';
+  const password = req.query.password || 'pass';
+  const action = req.query.action;
+  const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
+  const logoUrl = process.env.LOGO_URL || `${hostUrl}/public/logo.png`;
+
+  if (action === 'get_live_categories') {
+    return res.json([{ category_id: "1", category_name: "Animation", parent_id: 0 }]);
+  }
+
+  if (action === 'get_live_streams') {
+    return res.json([{
+      num: 1,
+      name: process.env.CHANNEL_NAME || "Cartoon Network Webchnl",
+      stream_type: "live",
+      stream_id: 1001,
+      stream_icon: logoUrl,
+      epg_channel_id: process.env.TVG_ID || "CartoonNetworkOnWebchnl.us",
+      category_id: "1",
+      custom_sid: "",
+      direct_source: ""
+    }]);
+  }
+
+  // Base Auth Info
+  res.json({
+    user_info: {
+      username: username,
+      password: password,
+      message: "Active",
+      auth: 1,
+      status: "Active",
+      exp_date: "1988117600",
+      is_trial: "0",
+      active_cons: "0",
+      created_at: "1600000000",
+      max_connections: "10",
+      allowed_output_formats: ["m3u8", "ts"]
+    },
+    server_info: {
+      url: hostUrl.replace(/^https?:\/\//, ''),
+      port: PORT,
+      https_port: "443",
+      server_protocol: "https",
+      rtmp_port: RTMP_PORT,
+      timezone: "America/New_York"
+    }
+  });
+});
+
+// Xtream Stream Direct Endpoint: /live/:username/:password/:stream_id.:ext
+app.get('/live/:username/:password/:stream_id', (req, res) => {
+  res.redirect('/public/hls/index.m3u8');
+});
+
+// ----------------------------------------------------
+// Standard Endpoints
+// ----------------------------------------------------
 app.get('/playlist.m3u', (req, res) => {
   const hour = getETHour();
   const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live' };
 
-  // Reads Render Environment Variables with default fallbacks
   const tvgId = process.env.TVG_ID || 'CartoonNetworkOnWebchnl.us';
   const tvgName = process.env.TVG_NAME || 'Cartoon Network Webchnl';
   const channelName = process.env.CHANNEL_NAME || 'Cartoon Network Webchnl';
   const groupTitle = process.env.GROUP_TITLE || 'Webchnl';
   const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
+  const logoUrl = process.env.LOGO_URL || `${hostUrl}/public/logo.png`;
 
   res.setHeader('Content-Type', 'audio/x-mpegurl');
   res.setHeader('Content-Disposition', 'inline; filename="playlist.m3u"');
 
   const m3uContent = `#EXTM3U
-#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${hostUrl}/screenbug.png" group-title="${groupTitle}",${channelName} - ${currentShow.title}
+#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${logoUrl}" group-title="${groupTitle}",${channelName} - ${currentShow.title}
 ${hostUrl}/public/hls/index.m3u8
 `;
 
@@ -297,6 +376,19 @@ app.get('*', (req, res) => {
     res.redirect('/hls/index.m3u8');
   }
 });
+
+const initial = getScheduleSource();
+startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
+
+setInterval(() => {
+  const hour = getETHour();
+  const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
+
+  if (expectedSlot !== currentSlot) {
+    const active = getScheduleSource();
+    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
+  }
+}, 60 * 1000);
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Node] Server listening on port ${PORT}`);
