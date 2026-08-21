@@ -3,6 +3,7 @@ const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
 const NodeMediaServer = require('node-media-server');
+const { generateEASAudio, EAS_AUDIO_PATH } = require('./easAudio');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -21,8 +22,9 @@ const publicDir = path.join(__dirname, 'public');
 const showsDir = path.join(__dirname, 'public/Shows');
 const bumpersDir = path.join(__dirname, 'public/bumpers');
 const hlsOutputDir = path.join(__dirname, 'public/hls');
+const fontsDir = path.join(__dirname, 'public/fonts');
 
-[publicDir, showsDir, bumpersDir, hlsOutputDir].forEach(dir => {
+[publicDir, showsDir, bumpersDir, hlsOutputDir, fontsDir].forEach(dir => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -37,9 +39,14 @@ const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
 const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
 const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
 const SCREENBUG_IMAGE = path.join(__dirname, 'public/logo.png');
+const EASYPLUS_FONT = path.join(fontsDir, 'easyplus.otf');
 const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
 
 const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
+
+// EAS State Variables
+let easActive = false;
+let easDetails = null;
 
 // Schedule mapping
 const SHOW_SCHEDULE = {
@@ -176,34 +183,60 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   const ratingPath = ratingImgName ? path.join(__dirname, 'public', ratingImgName) : null;
   const hasRating = ratingPath && fs.existsSync(ratingPath);
   const hasBug = fs.existsSync(SCREENBUG_IMAGE);
+  const hasEasAudio = easActive && fs.existsSync(EAS_AUDIO_PATH);
 
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
+  // Append EAS tone generator audio input if active
+  if (hasEasAudio) {
+    args.push('-i', EAS_AUDIO_PATH);
+  }
+
+  let nextInputIndex = 1;
+  const ratingInputIdx = hasRating ? nextInputIndex++ : null;
+  const bugInputIdx = hasBug ? nextInputIndex++ : null;
+  const easAudioInputIdx = hasEasAudio ? nextInputIndex++ : null;
+
   const scaleBaseVideo = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];';
   
-  let filterComplex = '';
+  let filterComplex = scaleBaseVideo;
+  let lastVideoPad = '[bg]';
 
   if (hasRating && hasBug) {
-    // 0 = video, 1 = rating, 2 = screenbug
-    filterComplex = scaleBaseVideo + 
-      '[1:v]scale=200:-1[rating];' + 
-      '[2:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];' + 
-      '[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'[tmp];' + 
-      '[tmp][bug]overlay=main_w-overlay_w-60:60';
+    filterComplex += `[${ratingInputIdx}:v]scale=200:-1[rating];` +
+      `[${bugInputIdx}:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
+      `[bg][rating]overlay=60:60:enable='between(t,0,5)'[tmp];` +
+      `[tmp][bug]overlay=main_w-overlay_w-60:60[voverlay];`;
+    lastVideoPad = '[voverlay]';
   } else if (hasRating) {
-    // 0 = video, 1 = rating
-    filterComplex = scaleBaseVideo + '[1:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable=\'between(t,0,5)\'';
+    filterComplex += `[${ratingInputIdx}:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable='between(t,0,5)'[voverlay];`;
+    lastVideoPad = '[voverlay]';
   } else if (hasBug) {
-    // 0 = video, 1 = screenbug
-    filterComplex = scaleBaseVideo + 
-      '[1:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];' + 
-      '[bg][bug]overlay=main_w-overlay_w-60:60';
+    filterComplex += `[${bugInputIdx}:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
+      `[bg][bug]overlay=main_w-overlay_w-60:60[voverlay];`;
+    lastVideoPad = '[voverlay]';
+  }
+
+  // EAS Fontstruct Text Overlay
+  if (easActive && easDetails) {
+    const safeText = easDetails.text.replace(/'/g, '').replace(/:/g, '\\:');
+    const fontOpt = fs.existsSync(EASYPLUS_FONT) ? `:fontfile='${EASYPLUS_FONT.replace(/\\/g, '/')}'` : '';
+
+    filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=42:box=1:boxcolor=red@0.85:boxborderw=12:x=w-mod(max(t-2\\,0)*220\\,w+tw):y=60[vout]`;
   } else {
-    filterComplex = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2';
+    filterComplex += `${lastVideoPad}null[vout]`;
+  }
+
+  // Audio Complex: Inject EAS Tones over program audio if active
+  if (hasEasAudio) {
+    filterComplex += `;[${easAudioInputIdx}:a]volume=1.0[outa]`;
+  } else {
+    filterComplex += `;[0:a]volume=1.0[outa]`;
   }
 
   args.push('-filter_complex', filterComplex);
+  args.push('-map', '[vout]', '-map', '[outa]');
 
   // Common encoding flags
   args.push(
@@ -265,6 +298,49 @@ const nmsConfig = {
 };
 const nms = new NodeMediaServer(nmsConfig);
 nms.run();
+
+// ----------------------------------------------------
+// EASyPLUS Simulation API
+// ----------------------------------------------------
+app.get('/api/eas/status', (req, res) => {
+  res.json({ active: easActive, details: easDetails });
+});
+
+app.post('/api/eas/trigger', express.json(), (req, res) => {
+  const { eventCode = 'RMT', countyCode = '039035', alertText } = req.body;
+
+  generateEASAudio(eventCode, countyCode, (err, audioFile) => {
+    if (err) {
+      console.error('[EAS Error] Failed to construct SAME audio tones:', err);
+      return res.status(500).json({ error: 'Audio synthesis failed' });
+    }
+
+    easActive = true;
+    easDetails = {
+      eventCode,
+      countyCode,
+      text: alertText || "THIS IS A REQUIRED MONTHLY TEST OF THE EMERGENCY ALERT SYSTEM FOR NORTHEAST OHIO.",
+      audioPath: audioFile
+    };
+
+    console.log(`[EAS ALERT] EASyPLUS Alert Triggered for Northeast Ohio (${countyCode})`);
+
+    // Restart FFmpeg to immediately apply audio & text crawl
+    const active = getScheduleSource();
+    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
+
+    // Auto-clear after 28 seconds
+    setTimeout(() => {
+      easActive = false;
+      easDetails = null;
+      console.log('[EAS ALERT] Alert complete. Normal stream resuming.');
+      const resetSource = getScheduleSource();
+      startFFmpeg(resetSource.source, resetSource.isLooping, resetSource.isConcat, resetSource.ratingImg);
+    }, 28000);
+
+    res.json({ success: true, message: 'EAS Alert successfully broadcasted to live stream.', details: easDetails });
+  });
+});
 
 // ----------------------------------------------------
 // Xtream Codes Emulation API
@@ -364,7 +440,8 @@ app.get('/api/now-playing', (req, res) => {
     rating: currentShow.rating || 'TV-G',
     title: `Airing at ${hour}:00 ET`,
     file: fileList[0],
-    m3u8Url: '/hls/index.m3u8'
+    m3u8Url: '/hls/index.m3u8',
+    easActive
   });
 });
 
@@ -383,6 +460,8 @@ const initial = getScheduleSource();
 startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
 
 setInterval(() => {
+  if (easActive) return; // Do not interrupt schedule during an active alert
+
   const hour = getETHour();
   const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
 
