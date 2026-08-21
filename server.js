@@ -9,7 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const RTMP_PORT = process.env.RTMP_PORT || 1935;
 
-// Enable CORS for all web players, Xbox Edge, and external players
+// Enable CORS for all web players, Xbox Edge, and external IPTV clients
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
@@ -48,7 +48,7 @@ const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnerme
 let easActive = false;
 let easDetails = null;
 
-// Schedule mapping
+// Schedule mapping (Eastern Time)
 const SHOW_SCHEDULE = {
   9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
   10: { 
@@ -188,7 +188,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
 
-  // Append EAS tone generator audio input if active
+  // Append EAS tone audio input if active
   if (hasEasAudio) {
     args.push('-i', EAS_AUDIO_PATH);
   }
@@ -228,7 +228,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     filterComplex += `${lastVideoPad}null[vout]`;
   }
 
-  // Audio Complex: Inject EAS Tones over program audio if active
+  // Audio Filter Complex: Switch to EAS tones when alert is active
   if (hasEasAudio) {
     filterComplex += `;[${easAudioInputIdx}:a]volume=1.0[outa]`;
   } else {
@@ -311,7 +311,7 @@ app.post('/api/eas/trigger', express.json(), (req, res) => {
 
   generateEASAudio(eventCode, countyCode, (err, audioFile) => {
     if (err) {
-      console.error('[EAS Error] Failed to construct SAME audio tones:', err);
+      console.error('[EAS Error] Failed to generate SAME tones:', err);
       return res.status(500).json({ error: 'Audio synthesis failed' });
     }
 
@@ -325,20 +325,20 @@ app.post('/api/eas/trigger', express.json(), (req, res) => {
 
     console.log(`[EAS ALERT] EASyPLUS Alert Triggered for Northeast Ohio (${countyCode})`);
 
-    // Restart FFmpeg to immediately apply audio & text crawl
+    // Restart FFmpeg stream to immediately play EAS audio and show crawl
     const active = getScheduleSource();
     startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
 
-    // Auto-clear after 28 seconds
+    // Auto-clear alert after 28 seconds
     setTimeout(() => {
       easActive = false;
       easDetails = null;
-      console.log('[EAS ALERT] Alert complete. Normal stream resuming.');
+      console.log('[EAS ALERT] Alert complete. Resuming normal programming.');
       const resetSource = getScheduleSource();
       startFFmpeg(resetSource.source, resetSource.isLooping, resetSource.isConcat, resetSource.ratingImg);
     }, 28000);
 
-    res.json({ success: true, message: 'EAS Alert successfully broadcasted to live stream.', details: easDetails });
+    res.json({ success: true, message: 'EAS Alert active on stream.', details: easDetails });
   });
 });
 
@@ -370,7 +370,6 @@ app.get(['/player_api.php', '/get.php'], (req, res) => {
     }]);
   }
 
-  // Base Auth Info
   res.json({
     user_info: {
       username: username,
@@ -396,7 +395,6 @@ app.get(['/player_api.php', '/get.php'], (req, res) => {
   });
 });
 
-// Xtream Stream Direct Endpoint: /live/:username/:password/:stream_id
 app.get('/live/:username/:password/:stream_id', (req, res) => {
   res.redirect('/public/hls/index.m3u8');
 });
@@ -456,11 +454,13 @@ app.get('*', (req, res) => {
   }
 });
 
+// Initial startup
 const initial = getScheduleSource();
 startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
 
+// Check schedule transition every minute
 setInterval(() => {
-  if (easActive) return; // Do not interrupt schedule during an active alert
+  if (easActive) return; // Maintain alert overlay during EAS active state
 
   const hour = getETHour();
   const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
