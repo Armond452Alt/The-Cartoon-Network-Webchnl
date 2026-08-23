@@ -9,15 +9,7 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 const RTMP_PORT = process.env.RTMP_PORT || 1935;
 
-// Enable CORS for all web players, Xbox Edge, and external IPTV clients
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  next();
-});
-
-// Directory layout setup
+// Direct directory declarations
 const publicDir = path.join(__dirname, 'public');
 const showsDir = path.join(__dirname, 'public/Shows');
 const bumpersDir = path.join(__dirname, 'public/bumpers');
@@ -25,12 +17,28 @@ const hlsOutputDir = path.join(__dirname, 'public/hls');
 const fontsDir = path.join(__dirname, 'public/fonts');
 
 [publicDir, showsDir, bumpersDir, hlsOutputDir, fontsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
-// Explicit Static Route for HLS files with proper MIME types
+// File Constants defined BEFORE route registration
+const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
+const FALLBACK_VIDEO = path.join(publicDir, 'offair.mp4');
+const TECH_DIFFICULTIES_VIDEO = path.join(publicDir, 'technical_difficulties.mp4');
+const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
+const SCREENBUG_IMAGE = path.join(publicDir, 'logo.png');
+const EASYPLUS_FONT = path.join(fontsDir, 'easyplus.otf');
+
+const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
+
+// Enable CORS
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  next();
+});
+
+// Serve HLS directory explicitly with strict no-cache and MIME types
 app.use('/public/hls', express.static(hlsOutputDir, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.m3u8')) {
@@ -43,47 +51,28 @@ app.use('/public/hls', express.static(hlsOutputDir, {
   }
 }));
 
-// Serve general public directory
 app.use('/public', express.static(publicDir));
 app.use(express.static(publicDir));
 
-// Dedicated endpoint to serve the primary playlist directly
+// Stream delivery endpoint
 app.get(['/hls/index.m3u8', '/public/hls/index.m3u8'], (req, res) => {
-  const filePath = HLS_OUTPUT_FILE;
-  if (fs.existsSync(filePath)) {
+  if (fs.existsSync(HLS_OUTPUT_FILE)) {
     res.setHeader('Content-Type', 'application/x-mpegURL');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.sendFile(filePath);
-  } else {
-    res.status(503).setHeader('Content-Type', 'text/plain');
-    res.send('Stream segment initializing...');
+    return res.sendFile(HLS_OUTPUT_FILE);
   }
+  res.status(503).setHeader('Content-Type', 'text/plain').send('Stream segment initializing...');
 });
 
-// Asset Configuration
-const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
-const TECH_DIFFICULTIES_VIDEO = path.join(__dirname, 'public/technical_difficulties.mp4');
-const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
-const SCREENBUG_IMAGE = path.join(__dirname, 'public/logo.png');
-const EASYPLUS_FONT = path.join(fontsDir, 'easyplus.otf');
-const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
-
-const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
-
-// EAS State Variables
 let easActive = false;
 let easDetails = null;
 
-// Schedule mapping (Eastern Time)
 const SHOW_SCHEDULE = {
   9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
   10: { 
     title: "Foster's Home for Imaginary Friends (S06E08 & S06E09)", 
-    rating: 'TV-Y7', 
-    ratingImg: 'tv_y7.png', 
-    bumper: 'fhoif.mp4', 
-    isMultiUrl: true,
+    rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'fhoif.mp4', isMultiUrl: true,
     urls: [
       'https://ia802900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E08.mp4',
       'https://ia902900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E09.mp4'
@@ -133,9 +122,7 @@ function getScheduleSource() {
       let concatLines = [];
 
       show.urls.forEach((url, idx) => {
-        if (activeBumper && idx > 0) {
-          concatLines.push(`file '${activeBumper}'`);
-        }
+        if (activeBumper && idx > 0) concatLines.push(`file '${activeBumper}'`);
         concatLines.push(`file '${url}'`);
       });
 
@@ -162,9 +149,7 @@ function getScheduleSource() {
         let concatLines = [];
 
         existingFiles.forEach((file, idx) => {
-          if (activeBumper && idx > 0) {
-            concatLines.push(`file '${activeBumper}'`);
-          }
+          if (activeBumper && idx > 0) concatLines.push(`file '${activeBumper}'`);
           concatLines.push(`file '${file}'`);
         });
 
@@ -173,12 +158,10 @@ function getScheduleSource() {
       }
 
       return { source: existingFiles[0], ratingImg: show.ratingImg, isConcat: false, isLooping: true };
-    } else {
-      const fallback = fs.existsSync(TECH_DIFFICULTIES_VIDEO) ? TECH_DIFFICULTIES_VIDEO : FALLBACK_VIDEO;
-      return { source: fallback, ratingImg: null, isConcat: false, isLooping: true };
     }
   }
 
+  // Fallback to live stream if file block is empty or out-of-schedule
   currentSlot = 'off_block';
   return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
 }
@@ -194,11 +177,11 @@ function stopFFmpeg() {
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
-  console.log(`[FFmpeg] Starting low-memory 720p stream. Source: ${inputSource}`);
+  console.log(`[FFmpeg] Starting encoding process for: ${inputSource}`);
 
   const args = [
     '-y',
-    '-loglevel', 'warning',
+    '-loglevel', 'info',
     '-fflags', '+genpts'
   ];
 
@@ -207,7 +190,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
 
   args.push('-i', inputSource);
 
-  const ratingPath = ratingImgName ? path.join(__dirname, 'public', ratingImgName) : null;
+  const ratingPath = ratingImgName ? path.join(publicDir, ratingImgName) : null;
   const hasRating = ratingPath && fs.existsSync(ratingPath);
   const hasBug = fs.existsSync(SCREENBUG_IMAGE);
   const hasEasAudio = easActive && fs.existsSync(EAS_AUDIO_PATH);
@@ -221,9 +204,7 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   const bugInputIdx = hasBug ? nextInputIndex++ : null;
   const easAudioInputIdx = hasEasAudio ? nextInputIndex++ : null;
 
-  const scaleBaseVideo = '[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-ih)/2:(oh-ih)/2[bg];';
-  
-  let filterComplex = scaleBaseVideo;
+  let filterComplex = '[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-ih)/2:(oh-ih)/2[bg];';
   let lastVideoPad = '[bg]';
 
   if (hasRating && hasBug) {
@@ -244,15 +225,15 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   if (easActive && easDetails) {
     const safeText = easDetails.text.replace(/'/g, '').replace(/:/g, '\\:');
     const fontOpt = fs.existsSync(EASYPLUS_FONT) ? `:fontfile='${EASYPLUS_FONT.replace(/\\/g, '/')}'` : '';
-    filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=28:box=1:boxcolor=red@0.85:boxborderw=8:x=w-mod(max(t-2\\,0)*180\\,w+tw):y=40[vout]`;
+    filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=28:box=1:boxcolor=red@0.85:boxborderw=8:x=w-mod(max(t-2\\,0)*180\\,w+tw):y=40[vout];`;
   } else {
-    filterComplex += `${lastVideoPad}null[vout]`;
+    filterComplex += `${lastVideoPad}copy[vout];`;
   }
 
   if (hasEasAudio) {
-    filterComplex += `;[${easAudioInputIdx}:a]volume=1.0[outa]`;
+    filterComplex += `[${easAudioInputIdx}:a]volume=1.0[outa]`;
   } else {
-    filterComplex += `;[0:a]volume=1.0[outa]`;
+    filterComplex += `[0:a]volume=1.0[outa]`;
   }
 
   args.push('-filter_complex', filterComplex);
@@ -282,22 +263,21 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     '-hls_list_size', '4',
     '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_segment_type', 'mpegts',
-    HLS_OUTPUT_FILE,
-    '-f', 'flv',
-    `rtmp://127.0.0.1:${RTMP_PORT}/live/cnwebchannel`
+    HLS_OUTPUT_FILE
   );
 
   ffmpegProcess = spawn('ffmpeg', args);
 
+  // Output logs directly to Render Shell to immediately see crashes
   ffmpegProcess.stderr.on('data', (data) => {
     const str = data.toString();
-    if (str.includes('Error') || str.includes('fatal')) {
+    if (str.includes('Error') || str.includes('Invalid') || str.includes('failed')) {
       console.error(`[FFmpeg Error]: ${str.trim()}`);
     }
   });
 
   ffmpegProcess.on('close', (code, signal) => {
-    console.log(`[FFmpeg EXIT] Code: ${code}, Signal: ${signal}`);
+    console.log(`[FFmpeg EXIT] Process ended with code ${code}. Restarting stream engine in 3s...`);
     setTimeout(() => {
       const active = getScheduleSource();
       startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
@@ -305,106 +285,16 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   });
 }
 
-// Disable RAM-heavy GOP caching in NodeMediaServer
-const nmsConfig = {
-  rtmp: {
-    port: RTMP_PORT,
-    chunk_size: 4096,
-    gop_cache: false,
-    ping: 30,
-    ping_timeout: 60
-  }
-};
-const nms = new NodeMediaServer(nmsConfig);
+// Disable GOP caching in NodeMediaServer
+const nms = new NodeMediaServer({
+  rtmp: { port: RTMP_PORT, chunk_size: 4096, gop_cache: false, ping: 30, ping_timeout: 60 }
+});
 nms.run();
 
-// ----------------------------------------------------
-// EASyPLUS & DASDEC CAP Simulation API Endpoints
-// ----------------------------------------------------
-app.get('/api/eas/status', (req, res) => {
-  res.json({ active: easActive, details: easDetails });
-});
-
-app.post('/api/eas/trigger', express.json(), (req, res) => {
-  const { eventCode = 'RMT', countyCode = '039035', alertText } = req.body;
-
-  generateEASAudio(eventCode, countyCode, (err, audioFile) => {
-    if (err) {
-      console.error('[EAS Error] Failed to generate SAME tones:', err);
-      return res.status(500).json({ error: 'Audio synthesis failed' });
-    }
-
-    easActive = true;
-    easDetails = {
-      eventCode,
-      countyCode,
-      text: alertText || "THIS IS A REQUIRED MONTHLY TEST OF THE EMERGENCY ALERT SYSTEM FOR NORTHEAST OHIO.",
-      audioPath: audioFile
-    };
-
-    console.log(`[EAS ALERT] Alert Triggered for Northeast Ohio (${countyCode})`);
-
-    const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
-
-    setTimeout(() => {
-      easActive = false;
-      easDetails = null;
-      console.log('[EAS ALERT] Alert complete. Resuming normal programming.');
-      const resetSource = getScheduleSource();
-      startFFmpeg(resetSource.source, resetSource.isLooping, resetSource.isConcat, resetSource.ratingImg);
-    }, 28000);
-
-    res.json({ success: true, message: 'EAS Alert active on stream.', details: easDetails });
-  });
-});
-
-app.post('/api/dasdec/cap-ingest', express.json({ type: ['text/xml', 'application/json'] }), (req, res) => {
-  const eventCode = req.body.eventCode || 'RMT';
-  const countyCode = req.body.countyCode || '039035';
-  const alertText = req.body.description || req.body.alertText || 'A REQUIRED MONTHLY TEST HAS BEEN ISSUED BY DASDEC.';
-
-  console.log(`[DASDEC INGEST] Received ${eventCode} alert for location code ${countyCode}`);
-
-  generateEASAudio(eventCode, countyCode, (err, audioFile) => {
-    if (err) {
-      console.error('[DASDEC Error] FSK Synthesis Failed:', err);
-      return res.status(500).json({ status: 'ERROR', message: 'FSK Synthesis Failed' });
-    }
-
-    easActive = true;
-    easDetails = {
-      origin: 'DASDEC-CAP',
-      eventCode,
-      countyCode,
-      text: alertText.toUpperCase(),
-      audioPath: audioFile
-    };
-
-    const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
-
-    setTimeout(() => {
-      easActive = false;
-      easDetails = null;
-      console.log('[DASDEC] Alert sequence concluded. Resuming primary source.');
-      const resetSource = getScheduleSource();
-      startFFmpeg(resetSource.source, resetSource.isLooping, resetSource.isConcat, resetSource.ratingImg);
-    }, 28000);
-
-    res.json({ status: 'SUCCESS', message: 'DASDEC alert ingested and live on stream.' });
-  });
-});
-
-// ----------------------------------------------------
 // Xtream Codes Emulation API
-// ----------------------------------------------------
 app.get(['/player_api.php', '/get.php'], (req, res) => {
-  const username = req.query.username || 'user';
-  const password = req.query.password || 'pass';
-  const action = req.query.action;
   const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
-  const logoUrl = process.env.LOGO_URL || `${hostUrl}/public/logo.png`;
+  const action = req.query.action;
 
   if (action === 'get_live_categories') {
     return res.json([{ category_id: "1", category_name: "Animation", parent_id: 0 }]);
@@ -416,36 +306,15 @@ app.get(['/player_api.php', '/get.php'], (req, res) => {
       name: process.env.CHANNEL_NAME || "Cartoon Network Webchnl",
       stream_type: "live",
       stream_id: 1001,
-      stream_icon: logoUrl,
+      stream_icon: `${hostUrl}/public/logo.png`,
       epg_channel_id: process.env.TVG_ID || "CartoonNetworkOnWebchnl.us",
-      category_id: "1",
-      custom_sid: "",
-      direct_source: ""
+      category_id: "1"
     }]);
   }
 
   res.json({
-    user_info: {
-      username: username,
-      password: password,
-      message: "Active",
-      auth: 1,
-      status: "Active",
-      exp_date: "1988117600",
-      is_trial: "0",
-      active_cons: "0",
-      created_at: "1600000000",
-      max_connections: "10",
-      allowed_output_formats: ["m3u8", "ts"]
-    },
-    server_info: {
-      url: hostUrl.replace(/^https?:\/\//, ''),
-      port: PORT,
-      https_port: "443",
-      server_protocol: "https",
-      rtmp_port: RTMP_PORT,
-      timezone: "America/New_York"
-    }
+    user_info: { status: "Active", allowed_output_formats: ["m3u8", "ts"] },
+    server_info: { url: hostUrl.replace(/^https?:\/\//, ''), port: PORT, rtmp_port: RTMP_PORT }
   });
 });
 
@@ -453,93 +322,38 @@ app.get('/live/:username/:password/:stream_id', (req, res) => {
   res.redirect('/public/hls/index.m3u8');
 });
 
-// ----------------------------------------------------
-// Standard Endpoints
-// ----------------------------------------------------
+// Playlist endpoint
 app.get('/playlist.m3u', (req, res) => {
   const hour = getETHour();
   const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live' };
-
-  const tvgId = process.env.TVG_ID || 'CartoonNetworkOnWebchnl.us';
-  const tvgName = process.env.TVG_NAME || 'Cartoon Network Webchnl';
-  const channelName = process.env.CHANNEL_NAME || 'Cartoon Network Webchnl';
-  const groupTitle = process.env.GROUP_TITLE || 'Webchnl';
   const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
-  const logoUrl = process.env.LOGO_URL || `${hostUrl}/public/logo.png`;
 
   res.setHeader('Content-Type', 'audio/x-mpegurl');
   res.setHeader('Content-Disposition', 'inline; filename="playlist.m3u"');
 
   const m3uContent = `#EXTM3U
-#EXTINF:-1 tvg-id="${tvgId}" tvg-name="${tvgName}" tvg-logo="${logoUrl}" group-title="${groupTitle}",${channelName} - ${currentShow.title}
+#EXTINF:-1 tvg-id="CartoonNetworkOnWebchnl.us" tvg-name="Cartoon Network Webchnl" tvg-logo="${hostUrl}/public/logo.png" group-title="Webchnl",Cartoon Network - ${currentShow.title}
 ${hostUrl}/public/hls/index.m3u8
 `;
 
   res.send(m3uContent);
 });
 
-app.get('/api/schedule', (req, res) => res.json(SHOW_SCHEDULE));
+app.get('/health', (req, res) => res.send('OK'));
 
-app.get('/api/now-playing', (req, res) => {
-  const hour = getETHour();
-  const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live', rating: 'TV-MA', files: [] };
-  const fileList = (currentShow.files && currentShow.files.length > 0)
-    ? currentShow.files.map(f => `/Shows/${f}`)
-    : (currentShow.urls || ['/hls/index.m3u8']);
-
-  res.json({
-    show: currentShow.title || 'Cartoon Network',
-    rating: currentShow.rating || 'TV-G',
-    title: `Airing at ${hour}:00 ET`,
-    file: fileList[0],
-    m3u8Url: '/hls/index.m3u8',
-    easActive
-  });
-});
-
-app.get('/health', (req, res) => res.send('Cartoon Network Webchannel Stream Server is Running.'));
-
-// Wildcard Catch-all Route
+// Catch-all SPA route
 app.get('*', (req, res) => {
-  // Never intercept requests that look like HLS segment files or playlists
   if (req.path.endsWith('.m3u8') || req.path.endsWith('.ts')) {
-    return res.status(404).setHeader('Content-Type', 'text/plain').send('HLS segment not found');
+    return res.status(404).setHeader('Content-Type', 'text/plain').send('Segment Not Found');
   }
-
-  const indexPath = path.join(__dirname, 'public', 'index.html');
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    res.redirect('/hls/index.m3u8');
-  }
+  const indexPath = path.join(publicDir, 'index.html');
+  if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+  res.redirect('/hls/index.m3u8');
 });
 
-// Initial startup
-const initial = getScheduleSource();
-startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
-
-// Check schedule transition every minute
-setInterval(() => {
-  if (easActive) return;
-
-  const hour = getETHour();
-  const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
-
-  if (expectedSlot !== currentSlot) {
-    const active = getScheduleSource();
-    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
-  }
-}, 60 * 1000);
-
+// Launch server & initial FFmpeg instance
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Node] Server listening on port ${PORT}`);
-  const RENDER_EXTERNAL_URL = process.env.RENDER_EXTERNAL_URL || 'https://the-cartoon-network-webchnl.onrender.com';
-
-  setInterval(async () => {
-    try {
-      await fetch(`${RENDER_EXTERNAL_URL}/health`);
-    } catch (err) {
-      console.error(`[Self-Ping Error]:`, err.message);
-    }
-  }, 10 * 60 * 1000);
+  console.log(`[Server] Running on port ${PORT}`);
+  const initial = getScheduleSource();
+  startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
 });
