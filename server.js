@@ -238,9 +238,8 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     const fontOpt = fs.existsSync(EASYPLUS_FONT) ? `:fontfile='${EASYPLUS_FONT.replace(/\\/g, '/')}'` : '';
     filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=28:box=1:boxcolor=red@0.85:boxborderw=8:x=w-mod(max(t-2\\,0)*180\\,w+tw):y=40[vout];`;
   } else {
-    filterComplex += `${lastVideoPad}copy[vout];`;
+    filterComplex += `${lastVideoPad}null[vout];`;
   }
-
   if (hasEasAudio) {
     filterComplex += `[${easAudioInputIdx}:a]volume=1.0[outa]`;
   } else {
