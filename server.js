@@ -30,9 +30,36 @@ const fontsDir = path.join(__dirname, 'public/fonts');
   }
 });
 
-// Serve public directory explicitly with static CORS
+// Explicit Static Route for HLS files with proper MIME types
+app.use('/public/hls', express.static(hlsOutputDir, {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.m3u8')) {
+      res.setHeader('Content-Type', 'application/x-mpegURL');
+    } else if (filePath.endsWith('.ts')) {
+      res.setHeader('Content-Type', 'video/MP2T');
+    }
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+}));
+
+// Serve general public directory
 app.use('/public', express.static(publicDir));
 app.use(express.static(publicDir));
+
+// Dedicated endpoint to serve the primary playlist directly
+app.get(['/hls/index.m3u8', '/public/hls/index.m3u8'], (req, res) => {
+  const filePath = HLS_OUTPUT_FILE;
+  if (fs.existsSync(filePath)) {
+    res.setHeader('Content-Type', 'application/x-mpegURL');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.sendFile(filePath);
+  } else {
+    res.status(503).setHeader('Content-Type', 'text/plain');
+    res.send('Stream segment initializing...');
+  }
+});
 
 // Asset Configuration
 const FALLBACK_VIDEO = path.join(__dirname, 'public/offair.mp4');
@@ -194,7 +221,6 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   const bugInputIdx = hasBug ? nextInputIndex++ : null;
   const easAudioInputIdx = hasEasAudio ? nextInputIndex++ : null;
 
-  // Downscaled resolution to 720p (1280x720) to maintain low memory usage
   const scaleBaseVideo = '[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-ih)/2:(oh-ih)/2[bg];';
   
   let filterComplex = scaleBaseVideo;
@@ -232,7 +258,6 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   args.push('-filter_complex', filterComplex);
   args.push('-map', '[vout]', '-map', '[outa]');
 
-  // Low-memory encoding flags
   args.push(
     '-threads', '1',
     '-c:v', 'libx264',
@@ -474,7 +499,13 @@ app.get('/api/now-playing', (req, res) => {
 
 app.get('/health', (req, res) => res.send('Cartoon Network Webchannel Stream Server is Running.'));
 
+// Wildcard Catch-all Route
 app.get('*', (req, res) => {
+  // Never intercept requests that look like HLS segment files or playlists
+  if (req.path.endsWith('.m3u8') || req.path.endsWith('.ts')) {
+    return res.status(404).setHeader('Content-Type', 'text/plain').send('HLS segment not found');
+  }
+
   const indexPath = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
