@@ -185,6 +185,17 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     '-fflags', '+genpts'
   ];
 
+  // Inject browser headers when connecting to remote HTTP/HLS live streams
+  if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
+    const customHeaders = [
+      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
+      'Referer: https://www.adultswim.com/',
+      'Origin: https://www.adultswim.com'
+    ].join('\r\n') + '\r\n';
+
+    args.push('-headers', customHeaders);
+  }
+
   if (isLooping) args.push('-stream_loop', '-1');
   if (isConcat) args.push('-f', 'concat', '-safe', '0');
 
@@ -268,12 +279,9 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
 
   ffmpegProcess = spawn('ffmpeg', args);
 
-  // Output logs directly to Render Shell to immediately see crashes
+  // Full error logging to identify any unexpected exit cause
   ffmpegProcess.stderr.on('data', (data) => {
-    const str = data.toString();
-    if (str.includes('Error') || str.includes('Invalid') || str.includes('failed')) {
-      console.error(`[FFmpeg Error]: ${str.trim()}`);
-    }
+    console.error(`[FFmpeg STDERR]: ${data.toString().trim()}`);
   });
 
   ffmpegProcess.on('close', (code, signal) => {
