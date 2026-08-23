@@ -167,7 +167,7 @@ function stopFFmpeg() {
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
-  console.log(`[FFmpeg] Starting web-compatible HLS & RTMP stream. Source: ${inputSource}`);
+  console.log(`[FFmpeg] Starting low-memory 720p stream. Source: ${inputSource}`);
 
   const args = [
     '-y',
@@ -187,48 +187,42 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
 
   if (hasRating) args.push('-i', ratingPath);
   if (hasBug) args.push('-i', SCREENBUG_IMAGE);
-
-  // Append EAS tone audio input if active
-  if (hasEasAudio) {
-    args.push('-i', EAS_AUDIO_PATH);
-  }
+  if (hasEasAudio) args.push('-i', EAS_AUDIO_PATH);
 
   let nextInputIndex = 1;
   const ratingInputIdx = hasRating ? nextInputIndex++ : null;
   const bugInputIdx = hasBug ? nextInputIndex++ : null;
   const easAudioInputIdx = hasEasAudio ? nextInputIndex++ : null;
 
-  const scaleBaseVideo = '[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2[bg];';
+  // Downscaled resolution to 720p (1280x720) to maintain low memory usage
+  const scaleBaseVideo = '[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-ih)/2:(oh-ih)/2[bg];';
   
   let filterComplex = scaleBaseVideo;
   let lastVideoPad = '[bg]';
 
   if (hasRating && hasBug) {
-    filterComplex += `[${ratingInputIdx}:v]scale=200:-1[rating];` +
-      `[${bugInputIdx}:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
-      `[bg][rating]overlay=60:60:enable='between(t,0,5)'[tmp];` +
-      `[tmp][bug]overlay=main_w-overlay_w-60:60[voverlay];`;
+    filterComplex += `[${ratingInputIdx}:v]scale=130:-1[rating];` +
+      `[${bugInputIdx}:v]scale=100:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
+      `[bg][rating]overlay=40:40:enable='between(t,0,5)'[tmp];` +
+      `[tmp][bug]overlay=main_w-overlay_w-40:40[voverlay];`;
     lastVideoPad = '[voverlay]';
   } else if (hasRating) {
-    filterComplex += `[${ratingInputIdx}:v]scale=200:-1[rating];[bg][rating]overlay=60:60:enable='between(t,0,5)'[voverlay];`;
+    filterComplex += `[${ratingInputIdx}:v]scale=130:-1[rating];[bg][rating]overlay=40:40:enable='between(t,0,5)'[voverlay];`;
     lastVideoPad = '[voverlay]';
   } else if (hasBug) {
-    filterComplex += `[${bugInputIdx}:v]scale=150:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
-      `[bg][bug]overlay=main_w-overlay_w-60:60[voverlay];`;
+    filterComplex += `[${bugInputIdx}:v]scale=100:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
+      `[bg][bug]overlay=main_w-overlay_w-40:40[voverlay];`;
     lastVideoPad = '[voverlay]';
   }
 
-  // EAS Fontstruct Text Overlay
   if (easActive && easDetails) {
     const safeText = easDetails.text.replace(/'/g, '').replace(/:/g, '\\:');
     const fontOpt = fs.existsSync(EASYPLUS_FONT) ? `:fontfile='${EASYPLUS_FONT.replace(/\\/g, '/')}'` : '';
-
-    filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=42:box=1:boxcolor=red@0.85:boxborderw=12:x=w-mod(max(t-2\\,0)*220\\,w+tw):y=60[vout]`;
+    filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=28:box=1:boxcolor=red@0.85:boxborderw=8:x=w-mod(max(t-2\\,0)*180\\,w+tw):y=40[vout]`;
   } else {
     filterComplex += `${lastVideoPad}null[vout]`;
   }
 
-  // Audio Filter Complex: Switch to EAS tones when alert is active
   if (hasEasAudio) {
     filterComplex += `;[${easAudioInputIdx}:a]volume=1.0[outa]`;
   } else {
@@ -238,30 +232,29 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   args.push('-filter_complex', filterComplex);
   args.push('-map', '[vout]', '-map', '[outa]');
 
-  // Common encoding flags
+  // Low-memory encoding flags
   args.push(
-    '-threads', '2',
+    '-threads', '1',
     '-c:v', 'libx264',
     '-preset', 'ultrafast',
     '-tune', 'zerolatency',
-    '-profile:v', 'main',
-    '-level:v', '4.1',
+    '-profile:v', 'baseline',
+    '-level:v', '3.1',
     '-pix_fmt', 'yuv420p',
-    '-b:v', '3500k',
-    '-maxrate', '4500k',
-    '-bufsize', '7000k',
+    '-b:v', '1500k',
+    '-maxrate', '1800k',
+    '-bufsize', '2000k',
     '-c:a', 'aac',
-    '-b:a', '128k',
+    '-b:a', '96k',
     '-ar', '44100',
     '-ac', '2',
     '-af', 'aresample=async=1'
   );
 
-  // Dual output setup: HLS (.m3u8) + Local RTMP
   args.push(
     '-f', 'hls',
     '-hls_time', '4',
-    '-hls_list_size', '6',
+    '-hls_list_size', '4',
     '-hls_flags', 'delete_segments+omit_endlist',
     '-hls_segment_type', 'mpegts',
     HLS_OUTPUT_FILE,
@@ -272,7 +265,10 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   ffmpegProcess = spawn('ffmpeg', args);
 
   ffmpegProcess.stderr.on('data', (data) => {
-    console.log(`[FFmpeg LOG]: ${data.toString().trim()}`);
+    const str = data.toString();
+    if (str.includes('Error') || str.includes('fatal')) {
+      console.error(`[FFmpeg Error]: ${str.trim()}`);
+    }
   });
 
   ffmpegProcess.on('close', (code, signal) => {
@@ -284,14 +280,12 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   });
 }
 
-// ----------------------------------------------------
-// RTMP Server Setup
-// ----------------------------------------------------
+// Disable RAM-heavy GOP caching in NodeMediaServer
 const nmsConfig = {
   rtmp: {
     port: RTMP_PORT,
-    chunk_size: 60000,
-    gop_cache: true,
+    chunk_size: 4096,
+    gop_cache: false,
     ping: 30,
     ping_timeout: 60
   }
@@ -300,7 +294,7 @@ const nms = new NodeMediaServer(nmsConfig);
 nms.run();
 
 // ----------------------------------------------------
-// EASyPLUS Simulation API
+// EASyPLUS & DASDEC CAP Simulation API Endpoints
 // ----------------------------------------------------
 app.get('/api/eas/status', (req, res) => {
   res.json({ active: easActive, details: easDetails });
@@ -323,13 +317,11 @@ app.post('/api/eas/trigger', express.json(), (req, res) => {
       audioPath: audioFile
     };
 
-    console.log(`[EAS ALERT] EASyPLUS Alert Triggered for Northeast Ohio (${countyCode})`);
+    console.log(`[EAS ALERT] Alert Triggered for Northeast Ohio (${countyCode})`);
 
-    // Restart FFmpeg stream to immediately play EAS audio and show crawl
     const active = getScheduleSource();
     startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
 
-    // Auto-clear alert after 28 seconds
     setTimeout(() => {
       easActive = false;
       easDetails = null;
@@ -339,6 +331,43 @@ app.post('/api/eas/trigger', express.json(), (req, res) => {
     }, 28000);
 
     res.json({ success: true, message: 'EAS Alert active on stream.', details: easDetails });
+  });
+});
+
+app.post('/api/dasdec/cap-ingest', express.json({ type: ['text/xml', 'application/json'] }), (req, res) => {
+  const eventCode = req.body.eventCode || 'RMT';
+  const countyCode = req.body.countyCode || '039035';
+  const alertText = req.body.description || req.body.alertText || 'A REQUIRED MONTHLY TEST HAS BEEN ISSUED BY DASDEC.';
+
+  console.log(`[DASDEC INGEST] Received ${eventCode} alert for location code ${countyCode}`);
+
+  generateEASAudio(eventCode, countyCode, (err, audioFile) => {
+    if (err) {
+      console.error('[DASDEC Error] FSK Synthesis Failed:', err);
+      return res.status(500).json({ status: 'ERROR', message: 'FSK Synthesis Failed' });
+    }
+
+    easActive = true;
+    easDetails = {
+      origin: 'DASDEC-CAP',
+      eventCode,
+      countyCode,
+      text: alertText.toUpperCase(),
+      audioPath: audioFile
+    };
+
+    const active = getScheduleSource();
+    startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
+
+    setTimeout(() => {
+      easActive = false;
+      easDetails = null;
+      console.log('[DASDEC] Alert sequence concluded. Resuming primary source.');
+      const resetSource = getScheduleSource();
+      startFFmpeg(resetSource.source, resetSource.isLooping, resetSource.isConcat, resetSource.ratingImg);
+    }, 28000);
+
+    res.json({ status: 'SUCCESS', message: 'DASDEC alert ingested and live on stream.' });
   });
 });
 
@@ -460,7 +489,7 @@ startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingI
 
 // Check schedule transition every minute
 setInterval(() => {
-  if (easActive) return; // Maintain alert overlay during EAS active state
+  if (easActive) return;
 
   const hour = getETHour();
   const expectedSlot = SHOW_SCHEDULE[hour] ? `show_${hour}` : 'off_block';
