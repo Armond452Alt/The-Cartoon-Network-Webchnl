@@ -166,30 +166,11 @@ function getScheduleSource() {
   return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
 }
 
-function stopFFmpeg() {
-  if (ffmpegProcess) {
-    ffmpegProcess.removeAllListeners('close');
-    ffmpegProcess.kill('SIGKILL');
-    ffmpegProcess = null;
-  }
-}
-
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
   stopFFmpeg();
 
   console.log(`[FFmpeg] Starting encoding process for: ${inputSource}`);
-if (isLooping) args.push('-stream_loop', '-1');
-  
-  if (isConcat) {
-    args.push(
-      '-f', 'concat', 
-      '-safe', '0', 
-      '-protocol_whitelist', 'file,http,https,tcp,tls,crypto'
-    );
-  }
 
-  args.push('-i', inputSource);
-  
   const args = [
     '-y',
     '-loglevel', 'info',
@@ -208,7 +189,14 @@ if (isLooping) args.push('-stream_loop', '-1');
   }
 
   if (isLooping) args.push('-stream_loop', '-1');
-  if (isConcat) args.push('-f', 'concat', '-safe', '0');
+
+  if (isConcat) {
+    args.push(
+      '-f', 'concat', 
+      '-safe', '0', 
+      '-protocol_whitelist', 'file,http,https,tcp,tls,crypto'
+    );
+  }
 
   args.push('-i', inputSource);
 
@@ -299,6 +287,7 @@ if (isLooping) args.push('-stream_loop', '-1');
       startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
     }, 3000);
   });
+}
 }
 
 // Disable GOP caching in NodeMediaServer
