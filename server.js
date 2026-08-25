@@ -241,9 +241,9 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     filterComplex += `${lastVideoPad}null[vout];`;
   }
   if (hasEasAudio) {
-    filterComplex += `[${easAudioInputIdx}:a]volume=1.0[outa]`;
+    filterComplex += `[${easAudioInputIdx}:a]volume=1.0,aresample=async=1[outa]`;
   } else {
-    filterComplex += `[0:a]volume=1.0[outa]`;
+    filterComplex += `[0:a]volume=1.0,aresample=async=1[outa]`;
   }
 
   args.push('-filter_complex', filterComplex);
@@ -263,10 +263,8 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     '-c:a', 'aac',
     '-b:a', '96k',
     '-ar', '44100',
-    '-ac', '2',
-    '-af', 'aresample=async=1'
+    '-ac', '2'
   );
-
   args.push(
     '-f', 'hls',
     '-hls_time', '4',
