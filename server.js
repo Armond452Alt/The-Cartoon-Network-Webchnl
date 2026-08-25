@@ -178,7 +178,18 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
   stopFFmpeg();
 
   console.log(`[FFmpeg] Starting encoding process for: ${inputSource}`);
+if (isLooping) args.push('-stream_loop', '-1');
+  
+  if (isConcat) {
+    args.push(
+      '-f', 'concat', 
+      '-safe', '0', 
+      '-protocol_whitelist', 'file,http,https,tcp,tls,crypto'
+    );
+  }
 
+  args.push('-i', inputSource);
+  
   const args = [
     '-y',
     '-loglevel', 'info',
