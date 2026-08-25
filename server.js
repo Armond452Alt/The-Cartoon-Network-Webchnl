@@ -161,9 +161,16 @@ function getScheduleSource() {
     }
   }
 
-  // Fallback to live stream if file block is empty or out-of-schedule
   currentSlot = 'off_block';
   return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
+}
+
+function stopFFmpeg() {
+  if (ffmpegProcess) {
+    ffmpegProcess.removeAllListeners('close');
+    ffmpegProcess.kill('SIGKILL');
+    ffmpegProcess = null;
+  }
 }
 
 function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
@@ -177,7 +184,6 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     '-fflags', '+genpts'
   ];
 
-  // Inject browser headers when connecting to remote HTTP/HLS live streams
   if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
     const customHeaders = [
       'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
@@ -275,7 +281,6 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
 
   ffmpegProcess = spawn('ffmpeg', args);
 
-  // Full error logging to identify any unexpected exit cause
   ffmpegProcess.stderr.on('data', (data) => {
     console.error(`[FFmpeg STDERR]: ${data.toString().trim()}`);
   });
@@ -288,15 +293,12 @@ function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImg
     }, 3000);
   });
 }
-}
 
-// Disable GOP caching in NodeMediaServer
 const nms = new NodeMediaServer({
   rtmp: { port: RTMP_PORT, chunk_size: 4096, gop_cache: false, ping: 30, ping_timeout: 60 }
 });
 nms.run();
 
-// Xtream Codes Emulation API
 app.get(['/player_api.php', '/get.php'], (req, res) => {
   const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
   const action = req.query.action;
@@ -327,7 +329,6 @@ app.get('/live/:username/:password/:stream_id', (req, res) => {
   res.redirect('/public/hls/index.m3u8');
 });
 
-// Playlist endpoint
 app.get('/playlist.m3u', (req, res) => {
   const hour = getETHour();
   const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live' };
@@ -346,7 +347,6 @@ ${hostUrl}/public/hls/index.m3u8
 
 app.get('/health', (req, res) => res.send('OK'));
 
-// Catch-all SPA route
 app.get('*', (req, res) => {
   if (req.path.endsWith('.m3u8') || req.path.endsWith('.ts')) {
     return res.status(404).setHeader('Content-Type', 'text/plain').send('Segment Not Found');
@@ -356,7 +356,6 @@ app.get('*', (req, res) => {
   res.redirect('/hls/index.m3u8');
 });
 
-// Launch server & initial FFmpeg instance
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Server] Running on port ${PORT}`);
   const initial = getScheduleSource();
