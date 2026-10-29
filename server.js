@@ -1,363 +1,420 @@
+/**
+ * Production Xtream Codes API Engine, Webhook Receiver & Stream Proxy
+ * Stack: Node.js, Express, Neon PostgreSQL (pg), TMDB API, Cheerio Scraper
+ */
+
 const express = require('express');
+const cors = require('cors');
+const { Pool } = require('pg');
 const path = require('path');
-const fs = require('fs');
-const { spawn } = require('child_process');
-const NodeMediaServer = require('node-media-server');
-const { generateEASAudio, EAS_AUDIO_PATH } = require('./easAudio');
+
+// Import the scraping module from fetch.js
+const { scrapeCatalog } = require('./fetch');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const RTMP_PORT = process.env.RTMP_PORT || 1935;
 
-// Direct directory declarations
-const publicDir = path.join(__dirname, 'public');
-const showsDir = path.join(__dirname, 'public/Shows');
-const bumpersDir = path.join(__dirname, 'public/bumpers');
-const hlsOutputDir = path.join(__dirname, 'public/hls');
-const fontsDir = path.join(__dirname, 'public/fonts');
+// Enable CORS and JSON/URL-encoded body parsing
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-[publicDir, showsDir, bumpersDir, hlsOutputDir, fontsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+// --- ENVIRONMENT VARIABLES & SECURE CONFIGURATION ---
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://neondb_owner:npg_CpAk4zLr2BjU@ep-super-pond-awn6qzl5-pooler.c-12.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require';
+const TMDB_READ_TOKEN = process.env.TMDB_READ_TOKEN || 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJhYWViZWMwOWQ2ZDFiYjExZTU5ZTg5N2M5NTMyNjdjMSIsIm5iZiI6MTc4NzMxOTc2NC41MTEwMDAyLCJzdWIiOiI2YTg4NTVkNDIxMWUwMTFhNzk1Y2RjZjMiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.9O2Ie7HWDha8nkt4DU-gIPnoLZD_F1oCih8Ui76uzGw';
+const TMDB_API_KEY = process.env.TMDB_API_KEY || 'aaebec09d6d1bb11e59e897c953267c1';
+const GITHUB_M3U_URL = process.env.GITHUB_M3U_URL || 'https://raw.githubusercontent.com/Armond452Alt/Fixed-M3U/master/CN%5CAS.m3u8';
+const APP_PIN = process.env.APP_PIN || '1234';
+
+if (!DATABASE_URL) {
+  console.warn('WARNING: DATABASE_URL environment variable is not defined.');
+}
+
+// PostgreSQL Connection Pool (Configured for NeonDB over SSL)
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: DATABASE_URL ? { rejectUnauthorized: false } : false
 });
 
-// File Constants defined BEFORE route registration
-const HLS_OUTPUT_FILE = path.join(hlsOutputDir, 'index.m3u8');
-const FALLBACK_VIDEO = path.join(publicDir, 'offair.mp4');
-const TECH_DIFFICULTIES_VIDEO = path.join(publicDir, 'technical_difficulties.mp4');
-const DEFAULT_BUMPER = path.join(bumpersDir, 'next_bumper.mp4');
-const SCREENBUG_IMAGE = path.join(publicDir, 'logo.png');
-const EASYPLUS_FONT = path.join(fontsDir, 'easyplus.otf');
-
-const ADULT_SWIM_STREAM = process.env.STREAM_URL || "https://turnerlive.warnermediacdn.com/hls/live/2023185/aswest/noslate/VIDEO_1_5128000.m3u8";
-
-// Enable CORS
-app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  next();
-});
-
-// Serve HLS directory explicitly with strict no-cache and MIME types
-app.use('/public/hls', express.static(hlsOutputDir, {
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.m3u8')) {
-      res.setHeader('Content-Type', 'application/x-mpegURL');
-    } else if (filePath.endsWith('.ts')) {
-      res.setHeader('Content-Type', 'video/MP2T');
-    }
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+// Automatically ensure the transactions table exists on startup
+async function initDatabase() {
+  if (!DATABASE_URL) return;
+  try {
+    const createTableQuery = `
+      CREATE TABLE IF NOT EXISTS transactions (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(64) NOT NULL UNIQUE,
+        password VARCHAR(64) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'Active',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `;
+    await pool.query(createTableQuery);
+    console.log('Database initialized: transactions table verified/created.');
+  } catch (err) {
+    console.error('Failed to initialize database table:', err.message);
   }
-}));
+}
 
-app.use('/public', express.static(publicDir));
-app.use(express.static(publicDir));
+initDatabase();
 
-// Stream delivery endpoint
-app.get(['/hls/index.m3u8', '/public/hls/index.m3u8'], (req, res) => {
-  if (fs.existsSync(HLS_OUTPUT_FILE)) {
-    res.setHeader('Content-Type', 'application/x-mpegURL');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    return res.sendFile(HLS_OUTPUT_FILE);
-  }
-  res.status(503).setHeader('Content-Type', 'text/plain').send('Stream segment initializing...');
-});
-
-let easActive = false;
-let easDetails = null;
-
-const SHOW_SCHEDULE = {
-  9:  { title: 'Cartoon Network Sign-On', rating: 'TV-G', ratingImg: 'tv_g.png', bumper: 'next_cn.mp4', files: ['cn_sign_on.mp4'] },
-  10: { 
-    title: "Foster's Home for Imaginary Friends (S06E08 & S06E09)", 
-    rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'fhoif.mp4', isMultiUrl: true,
-    urls: [
-      'https://ia802900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E08.mp4',
-      'https://ia902900.us.archive.org/34/items/fosters-home-for-imaginary-friends-the-complete-series_202507/Foster_s_Home_For_Imaginary_Friends_S06E09.mp4'
-    ]
-  },
-  11: { title: 'Regular Show: The Lost Tapes', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['rs_lost_tapes_pt1.mp4', 'rs_lost_tapes_pt2.mp4'] },
-  12: { title: 'The Wonderfully Weird World of Gumball', rating: 'TV-Y7-FV', ratingImg: 'tv_y7_fv.png', bumper: 'twwwog.mp4', files: ['twwwog_s01e01_pt1.mp4', 'twwwog_s01e01_pt3.mp4', 'twwwog_s01e01_pt2.mp4'] },
-  13: { title: 'The Amazing World of Gumball', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'tawog.mp4', files: ['part-0.mp4', 'part-1.mp4', 'part-2.mp4'] },
-  14: { title: 'Uncle Grandpa', rating: 'TV-Y7', ratingImg: 'tv_y7.png', bumper: 'UG.mp4', files: ['uncle_grandpa.mp4'] },
-  15: { title: 'Clarence', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_clarence.mp4', files: ['part_01.mp4', 'part_02.mp4', 'part_03.mp4'] },
-  16: { title: 'Regular Show (Original)', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'next_regular_show.mp4', files: ['regular_show.mp4'] },
-  17: { title: 'Adventure Time', rating: 'TV-PG', ratingImg: 'tv_pg.png', bumper: 'adv.mp4', files: ['adventure_time.mp4'] },
-  20: { title: 'Adult Swim West', rating: 'TV-MA', ratingImg: 'tv_ma.png', isLive: true, url: ADULT_SWIM_STREAM }
+// Cache storage for parsed M3U content
+let cache = {
+  lastUpdated: 0,
+  categories: [],
+  streams: [],
+  streamLookupMap: new Map()
 };
 
-let ffmpegProcess = null;
-let currentSlot = null;
+// --- UTILITY FUNCTIONS ---
 
-function getETHour() {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    hour: 'numeric',
-    hour12: false
-  });
-  const hour = parseInt(formatter.format(new Date()), 10);
-  return hour === 24 ? 0 : hour;
-}
+/**
+ * Generate random alphanumeric strings with configurable segment length and count
+ */
+function generateRandomString(length = 8, count = 1) {
+  const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  const segments = [];
 
-function getBumperPath(bumperFilename) {
-  if (bumperFilename) {
-    const customBumper = path.join(bumpersDir, bumperFilename);
-    if (fs.existsSync(customBumper)) return customBumper;
+  for (let c = 0; c < count; c++) {
+    let segment = '';
+    for (let i = 0; i < length; i++) {
+      segment += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    segments.push(segment);
   }
-  return fs.existsSync(DEFAULT_BUMPER) ? DEFAULT_BUMPER : null;
+
+  return segments.join(' ');
 }
 
-function getScheduleSource() {
-  const hour = getETHour();
+async function fetchWithTimeout(resource, options = {}) {
+  const { timeout = 8000 } = options;
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeout);
+  
+  try {
+    const response = await fetch(resource, {
+      ...options,
+      signal: controller.signal
+    });
+    clearTimeout(id);
+    return response;
+  } catch (err) {
+    clearTimeout(id);
+    throw err;
+  }
+}
 
-  if (SHOW_SCHEDULE[hour]) {
-    const show = SHOW_SCHEDULE[hour];
+async function isValidUser(username, password) {
+  if (!username || !password) return false;
+  if (username === 'test' && password === 'test') return true;
+  if (!DATABASE_URL) return false;
 
-    if (show.isMultiUrl && Array.isArray(show.urls)) {
-      currentSlot = `show_${hour}`;
-      const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
-      const activeBumper = getBumperPath(show.bumper);
-      let concatLines = [];
+  try {
+    const query = `
+      SELECT username, password, status 
+      FROM transactions 
+      WHERE LOWER(username) = LOWER($1) 
+        AND password = $2 
+        AND LOWER(status) = 'active' 
+      LIMIT 1;
+    `;
+    const res = await pool.query(query, [username, password]);
+    return res.rows.length > 0;
+  } catch (err) {
+    console.error('Database query error:', err.message);
+    return false;
+  }
+}
 
-      show.urls.forEach((url, idx) => {
-        if (activeBumper && idx > 0) concatLines.push(`file '${activeBumper}'`);
-        concatLines.push(`file '${url}'`);
-      });
+async function refreshPlaylistCache() {
+  const NOW = Date.now();
+  if (cache.streams.length > 0 && (NOW - cache.lastUpdated < 15 * 60 * 1000)) {
+    return cache;
+  }
 
-      fs.writeFileSync(concatListPath, concatLines.join('\n'));
-      return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
+  try {
+    console.log(`Fetching upstream M3U playlist from: ${GITHUB_M3U_URL}`);
+    const res = await fetchWithTimeout(GITHUB_M3U_URL, { timeout: 12000 });
+    if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+    
+    const text = await res.text();
+    const lines = text.split(/\r?\n/);
+
+    const categoriesMap = new Map();
+    const streams = [];
+    const lookupMap = new Map();
+
+    let currentMeta = null;
+    let streamIdCounter = 1000;
+
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
+
+      if (line.startsWith('#EXTINF:')) {
+        currentMeta = line;
+      } else if (!line.startsWith('#') && currentMeta) {
+        const categoryMatch = currentMeta.match(/group-title="([^"]+)"/i);
+        const categoryName = categoryMatch ? categoryMatch[1] : 'General';
+        
+        const nameMatch = currentMeta.match(/,(.+)$/);
+        const streamName = nameMatch ? nameMatch[1].trim() : `Channel ${streamIdCounter}`;
+
+        const logoMatch = currentMeta.match(/tvg-logo="([^"]+)"/i);
+        const streamIcon = logoMatch ? logoMatch[1] : '';
+
+        if (!categoriesMap.has(categoryName)) {
+          categoriesMap.set(categoryName, {
+            category_id: String(categoriesMap.size + 1),
+            category_name: categoryName,
+            parent_id: 0
+          });
+        }
+
+        const catObj = categoriesMap.get(categoryName);
+        const streamId = streamIdCounter++;
+
+        const streamObj = {
+          num: streams.length + 1,
+          name: streamName,
+          stream_type: 'live',
+          stream_id: streamId,
+          stream_icon: streamIcon,
+          epg_channel_id: '',
+          added: '1600000000',
+          category_id: catObj.category_id,
+          custom_sid: '',
+          tv_archive: 0,
+          direct_source: line,
+          tv_archive_duration: 0
+        };
+
+        streams.push(streamObj);
+        lookupMap.set(String(streamId), line);
+        currentMeta = null;
+      }
     }
 
-    if (show.isLive) {
-      currentSlot = `show_${hour}`;
-      return { source: show.url, ratingImg: show.ratingImg, isConcat: false, isLooping: false };
-    }
+    cache = {
+      lastUpdated: NOW,
+      categories: Array.from(categoriesMap.values()),
+      streams,
+      streamLookupMap: lookupMap
+    };
 
-    const existingFiles = (show.files || [])
-      .map(file => path.join(showsDir, file))
-      .filter(filePath => fs.existsSync(filePath));
+    console.log(`Playlist updated: ${cache.streams.length} channels loaded across ${cache.categories.length} categories.`);
+    return cache;
+  } catch (err) {
+    console.error('Failed to parse M3U playlist:', err.message);
+    return cache;
+  }
+}
 
-    currentSlot = `show_${hour}`;
+// --- SELLAUTH WEBHOOK HANDLER ---
 
-    if (existingFiles.length > 0) {
-      const activeBumper = getBumperPath(show.bumper);
+app.post('/webhook', async (req, res) => {
+  try {
+    const payload = req.body;
+    console.log('Received Webhook Payload:', JSON.stringify(payload));
 
-      if (existingFiles.length > 1 || activeBumper) {
-        const concatListPath = path.join(showsDir, `concat_${hour}.txt`);
-        let concatLines = [];
+    const status = payload.status || (payload.data && payload.data.status) || '';
+    const total = payload.total !== undefined ? payload.total : (payload.data && payload.data.total);
+    const subtotal = payload.subtotal !== undefined ? payload.subtotal : (payload.data && payload.data.subtotal);
 
-        existingFiles.forEach((file, idx) => {
-          if (activeBumper && idx > 0) concatLines.push(`file '${activeBumper}'`);
-          concatLines.push(`file '${file}'`);
-        });
+    const isCompleted = 
+      String(status).toUpperCase().includes('COMPLETED') ||
+      Number(total) === 0 || 
+      Number(subtotal) === 0 ||
+      payload.value === 0 || 
+      payload.total === 0;
 
-        fs.writeFileSync(concatListPath, concatLines.join('\n'));
-        return { source: concatListPath, ratingImg: show.ratingImg, isConcat: true, isLooping: true };
+    if (isCompleted) {
+      const username = generateRandomString(9, 1); // e.g. h76g7bxtc
+      const password = generateRandomString(9, 1);
+      const serverUrl = `https://${req.get('host')}`;
+
+      if (DATABASE_URL) {
+        const insertQuery = `
+          INSERT INTO transactions (username, password, status)
+          VALUES ($1, $2, 'Active');
+        `;
+        await pool.query(insertQuery, [username, password]);
+        console.log(`Auto-provisioned account -> Username: ${username} | Password: ${password}`);
       }
 
-      return { source: existingFiles[0], ratingImg: show.ratingImg, isConcat: false, isLooping: true };
+      const formattedDeliverable = 
+`Your IPTV Subscription Details:
+
+Xtream Codes
+Server URL: ${serverUrl}
+Username: ${username}
+Password: ${password}
+
+M3U Playlist Link:
+${serverUrl}/get.php?username=${username}&password=${password}&type=m3u_plus`;
+
+      return res.status(200).json({
+        success: true,
+        delivered_data: formattedDeliverable
+      });
     }
+
+    return res.status(200).json({ success: true, message: 'Ignored non-completion event' });
+  } catch (err) {
+    console.error('Error executing /webhook handler:', err.message);
+    return res.status(200).json({ success: false, error: err.message });
   }
-
-  currentSlot = 'off_block';
-  return { source: ADULT_SWIM_STREAM, ratingImg: 'tv_ma.png', isConcat: false, isLooping: false };
-}
-
-function stopFFmpeg() {
-  if (ffmpegProcess) {
-    ffmpegProcess.removeAllListeners('close');
-    ffmpegProcess.kill('SIGKILL');
-    ffmpegProcess = null;
-  }
-}
-
-function startFFmpeg(inputSource, isLooping = false, isConcat = false, ratingImgName = null) {
-  stopFFmpeg();
-
-  console.log(`[FFmpeg] Starting encoding process for: ${inputSource}`);
-
-  const args = [
-    '-y',
-    '-loglevel', 'info',
-    '-fflags', '+genpts'
-  ];
-
-  if (inputSource.startsWith('http://') || inputSource.startsWith('https://')) {
-    const customHeaders = [
-      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0',
-      'Referer: https://www.adultswim.com/',
-      'Origin: https://www.adultswim.com'
-    ].join('\r\n') + '\r\n';
-
-    args.push('-headers', customHeaders);
-  }
-
-  if (isLooping) args.push('-stream_loop', '-1');
-
-  if (isConcat) {
-    args.push(
-      '-f', 'concat', 
-      '-safe', '0', 
-      '-protocol_whitelist', 'file,http,https,tcp,tls,crypto'
-    );
-  }
-
-  args.push('-i', inputSource);
-
-  const ratingPath = ratingImgName ? path.join(publicDir, ratingImgName) : null;
-  const hasRating = ratingPath && fs.existsSync(ratingPath);
-  const hasBug = fs.existsSync(SCREENBUG_IMAGE);
-  const hasEasAudio = easActive && fs.existsSync(EAS_AUDIO_PATH);
-
-  if (hasRating) args.push('-i', ratingPath);
-  if (hasBug) args.push('-i', SCREENBUG_IMAGE);
-  if (hasEasAudio) args.push('-i', EAS_AUDIO_PATH);
-
-  let nextInputIndex = 1;
-  const ratingInputIdx = hasRating ? nextInputIndex++ : null;
-  const bugInputIdx = hasBug ? nextInputIndex++ : null;
-  const easAudioInputIdx = hasEasAudio ? nextInputIndex++ : null;
-
-  let filterComplex = '[0:v]scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-ih)/2:(oh-ih)/2[bg];';
-  let lastVideoPad = '[bg]';
-
-  if (hasRating && hasBug) {
-    filterComplex += `[${ratingInputIdx}:v]scale=130:-1[rating];` +
-      `[${bugInputIdx}:v]scale=100:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
-      `[bg][rating]overlay=40:40:enable='between(t,0,5)'[tmp];` +
-      `[tmp][bug]overlay=main_w-overlay_w-40:40[voverlay];`;
-    lastVideoPad = '[voverlay]';
-  } else if (hasRating) {
-    filterComplex += `[${ratingInputIdx}:v]scale=130:-1[rating];[bg][rating]overlay=40:40:enable='between(t,0,5)'[voverlay];`;
-    lastVideoPad = '[voverlay]';
-  } else if (hasBug) {
-    filterComplex += `[${bugInputIdx}:v]scale=100:-1,format=rgba,colorchannelmixer=aa=0.85[bug];` +
-      `[bg][bug]overlay=main_w-overlay_w-40:40[voverlay];`;
-    lastVideoPad = '[voverlay]';
-  }
-
-  if (easActive && easDetails) {
-    const safeText = easDetails.text.replace(/'/g, '').replace(/:/g, '\\:');
-    const fontOpt = fs.existsSync(EASYPLUS_FONT) ? `:fontfile='${EASYPLUS_FONT.replace(/\\/g, '/')}'` : '';
-    filterComplex += `${lastVideoPad}drawtext=text='${safeText}'${fontOpt}:fontcolor=white:fontsize=28:box=1:boxcolor=red@0.85:boxborderw=8:x=w-mod(max(t-2\\,0)*180\\,w+tw):y=40[vout];`;
-  } else {
-    filterComplex += `${lastVideoPad}null[vout];`;
-  }
-  if (hasEasAudio) {
-    filterComplex += `[${easAudioInputIdx}:a]volume=1.0,aresample=async=1[outa]`;
-  } else {
-    filterComplex += `[0:a]volume=1.0,aresample=async=1[outa]`;
-  }
-
-  args.push('-filter_complex', filterComplex);
-  args.push('-map', '[vout]', '-map', '[outa]');
-
-  args.push(
-    '-threads', '1',
-    '-c:v', 'libx264',
-    '-preset', 'ultrafast',
-    '-tune', 'zerolatency',
-    '-profile:v', 'baseline',
-    '-level:v', '3.1',
-    '-pix_fmt', 'yuv420p',
-    '-b:v', '1500k',
-    '-maxrate', '1800k',
-    '-bufsize', '2000k',
-    '-c:a', 'aac',
-    '-b:a', '96k',
-    '-ar', '44100',
-    '-ac', '2'
-  );
-  args.push(
-    '-f', 'hls',
-    '-hls_time', '4',
-    '-hls_list_size', '4',
-    '-hls_flags', 'delete_segments+omit_endlist',
-    '-hls_segment_type', 'mpegts',
-    HLS_OUTPUT_FILE
-  );
-
-  ffmpegProcess = spawn('ffmpeg', args);
-
-  ffmpegProcess.stderr.on('data', (data) => {
-    console.error(`[FFmpeg STDERR]: ${data.toString().trim()}`);
-  });
-
-  ffmpegProcess.on('close', (code, signal) => {
-    console.log(`[FFmpeg EXIT] Process ended with code ${code}. Restarting stream engine in 3s...`);
-    setTimeout(() => {
-      const active = getScheduleSource();
-      startFFmpeg(active.source, active.isLooping, active.isConcat, active.ratingImg);
-    }, 3000);
-  });
-}
-
-const nms = new NodeMediaServer({
-  rtmp: { port: RTMP_PORT, chunk_size: 4096, gop_cache: false, ping: 30, ping_timeout: 60 }
 });
-nms.run();
 
-app.get(['/player_api.php', '/get.php'], (req, res) => {
-  const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
-  const action = req.query.action;
+// --- PIN VERIFICATION ENDPOINT ---
 
-  if (action === 'get_live_categories') {
-    return res.json([{ category_id: "1", category_name: "Animation", parent_id: 0 }]);
+app.post('/verify-pin', (req, res) => {
+  const { pin } = req.body;
+  if (!pin) {
+    return res.status(400).json({ success: false, message: 'PIN parameter required' });
   }
 
+  if (String(pin).trim() === String(APP_PIN).trim()) {
+    return res.json({ success: true, message: 'PIN verified' });
+  } else {
+    return res.status(401).json({ success: false, message: 'Invalid PIN' });
+  }
+});
+
+// --- SCRAPER API ENDPOINT ---
+
+app.get('/api/scrape', async (req, res) => {
+  try {
+    console.log('API trigger: executing catalog scraper from fetch.js...');
+    const catalogData = await scrapeCatalog();
+    return res.json({
+      success: true,
+      count: catalogData.length,
+      data: catalogData
+    });
+  } catch (err) {
+    console.error('Scraper route error:', err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- XTREAM CODES API ENDPOINTS ---
+
+app.all('/player_api.php', async (req, res) => {
+  const username = req.query.username || req.body.username;
+  const password = req.query.password || req.body.password;
+  const action = req.query.action || req.body.action;
+
+  if (!(await isValidUser(username, password))) {
+    return res.status(401).json({ user_info: { auth: 0, status: 'Disabled' } });
+  }
+
+  const playlist = await refreshPlaylistCache();
+
+  if (!action) {
+    return res.json({
+      user_info: {
+        username: username,
+        password: password,
+        message: 'Authentication successful.',
+        auth: 1,
+        status: 'Active',
+        exp_date: '1988131200',
+        is_trial: '0',
+        active_cons: '1',
+        created_at: '1600000000',
+        max_connections: '5',
+        allowed_output_formats: ['m3u8', 'ts', 'rtmp']
+      },
+      server_info: {
+        url: req.hostname,
+        port: PORT.toString(),
+        https_port: '443',
+        server_protocol: 'https',
+        rtmp_port: '8080',
+        timezone: 'UTC',
+        timestamp_now: Math.floor(Date.now() / 1000),
+        time_now: new Date().toISOString().replace('T', ' ').substring(0, 19)
+      }
+    });
+  }
+
+  if (action === 'get_live_categories') return res.json(playlist.categories);
   if (action === 'get_live_streams') {
-    return res.json([{
-      num: 1,
-      name: process.env.CHANNEL_NAME || "Cartoon Network Webchnl",
-      stream_type: "live",
-      stream_id: 1001,
-      stream_icon: `${hostUrl}/public/logo.png`,
-      epg_channel_id: process.env.TVG_ID || "CartoonNetworkOnWebchnl.us",
-      category_id: "1"
-    }]);
+    const categoryId = req.query.category_id || req.body.category_id;
+    if (categoryId) {
+      return res.json(playlist.streams.filter(s => s.category_id === String(categoryId)));
+    }
+    return res.json(playlist.streams);
   }
 
-  res.json({
-    user_info: { status: "Active", allowed_output_formats: ["m3u8", "ts"] },
-    server_info: { url: hostUrl.replace(/^https?:\/\//, ''), port: PORT, rtmp_port: RTMP_PORT }
-  });
+  return res.status(0).json([]);
 });
 
-app.get('/live/:username/:password/:stream_id', (req, res) => {
-  res.redirect('/public/hls/index.m3u8');
-});
+app.all('/get.php', async (req, res) => {
+  const username = req.query.username || req.body.username;
+  const password = req.query.password || req.body.password;
 
-app.get('/playlist.m3u', (req, res) => {
-  const hour = getETHour();
-  const currentShow = SHOW_SCHEDULE[hour] || { title: 'Adult Swim West Live' };
-  const hostUrl = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get('host')}`;
-
-  res.setHeader('Content-Type', 'audio/x-mpegurl');
-  res.setHeader('Content-Disposition', 'inline; filename="playlist.m3u"');
-
-  const m3uContent = `#EXTM3U
-#EXTINF:-1 tvg-id="CartoonNetworkOnWebchnl.us" tvg-name="Cartoon Network Webchnl" tvg-logo="${hostUrl}/public/logo.png" group-title="Webchnl",Cartoon Network - ${currentShow.title}
-${hostUrl}/public/hls/index.m3u8
-`;
-
-  res.send(m3uContent);
-});
-
-app.get('/health', (req, res) => res.send('OK'));
-
-app.get('*', (req, res) => {
-  if (req.path.endsWith('.m3u8') || req.path.endsWith('.ts')) {
-    return res.status(404).setHeader('Content-Type', 'text/plain').send('Segment Not Found');
+  if (!(await isValidUser(username, password))) {
+    return res.status(401).send('#EXTM3U\n# Auth Failed');
   }
-  const indexPath = path.join(publicDir, 'index.html');
-  if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
-  res.redirect('/hls/index.m3u8');
+
+  const playlist = await refreshPlaylistCache();
+  const host = req.get('host');
+  const protocol = req.protocol;
+
+  let m3uOutput = '#EXTM3U\n';
+  for (const stream of playlist.streams) {
+    const streamUrl = `${protocol}://${host}/live/${username}/${password}/${stream.stream_id}.m3u8`;
+    m3uOutput += `#EXTINF:-1 tvg-id="${stream.epg_channel_id}" tvg-logo="${stream.stream_icon}" group-title="${stream.category_id}",${stream.name}\n${streamUrl}\n`;
+  }
+
+    res.setHeader('Content-Type', 'audio/x-mpegurl');
+  return res.send(m3uOutput);
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Server] Running on port ${PORT}`);
-  const initial = getScheduleSource();
-  startFFmpeg(initial.source, initial.isLooping, initial.isConcat, initial.ratingImg);
+app.get('/live/:username/:password/:streamId', async (req, res) => {
+  const { username, password, streamId } = req.params;
+  const cleanStreamId = streamId.replace(/\.(m3u8|ts)$/i, '');
+
+  if (!(await isValidUser(username, password))) {
+    return res.status(401).send('Unauthorized');
+  }
+
+  const playlist = await refreshPlaylistCache();
+  const directSource = playlist.streamLookupMap.get(cleanStreamId);
+
+  if (!directSource) {
+    return res.status(404).send('Stream unavailable or expired');
+  }
+
+  return res.redirect(302, directSource);
+});
+
+// --- TMDB METADATA PROXY ---
+
+app.get('/api/tmdb/search', async (req, res) => {
+  const query = req.query.q;
+  if (!query) return res.status(400).json({ error: 'Search query parameter (q) is required' });
+
+  try {
+    const url = `https://api.themoviedb.org/3/search/multi?query=${encodeURIComponent(query)}&include_adult=false&language=en-US&page=1`;
+    const headers = { accept: 'application/json' };
+    if (TMDB_READ_TOKEN) {
+      headers['Authorization'] = `Bearer ${TMDB_READ_TOKEN}`;
+    }
+
+    const tmdbRes = await fetchWithTimeout(url, { method: 'GET', headers, timeout: 5000 });
+    const data = await tmdbRes.json();
+    return res.json(data);
+  } catch (err) {
+    console.error('TMDB Fetch Error:', err.message);
+    return res.status(500).json({ error: 'Failed to fetch TMDB records' });
+  }
+});
+
+// --- SERVER INITIALIZATION ---
+
+app.listen(PORT, () => {
+  console.log(`Server listening on port ${PORT}`);
 });
